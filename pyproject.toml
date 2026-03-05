@@ -1,0 +1,66 @@
+[project]
+name = "stock-ai"
+version = "0.1.0"
+description = "Stock Portfolio Monitoring & AI Advisory Backend"
+requires-python = ">=3.11"
+dependencies = [
+    # Core framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+
+    # Groww Trading API
+    "growwapi>=1.0.0",
+    "pyotp>=2.9.0",
+
+    # AI / Anthropic
+    "anthropic>=0.84.0",
+
+    # Telegram
+    "python-telegram-bot>=22.0",
+
+    # Database (PyMongo native async — Motor is deprecated)
+    "pymongo>=4.10.0",
+
+    # Scheduler
+    "apscheduler>=3.11.0",
+
+    # Data processing & indicators
+    "pandas>=2.2.0",
+    "numpy>=2.0.0",
+
+    # Config
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.0.0",
+
+    # Timezone
+    "pytz>=2024.2",
+
+    # HTTP
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "mongomock>=4.2.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]

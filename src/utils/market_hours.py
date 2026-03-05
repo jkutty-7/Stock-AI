@@ -1,0 +1,115 @@
+"""NSE market hours, holidays, and trading session utilities."""
+
+from datetime import date, datetime, time, timedelta
+
+import pytz
+
+IST = pytz.timezone("Asia/Kolkata")
+
+MARKET_OPEN = time(9, 15)
+MARKET_CLOSE = time(15, 30)
+
+# NSE holidays for 2026 (update annually from NSE circular)
+NSE_HOLIDAYS_2026: list[date] = [
+    date(2026, 1, 26),   # Republic Day
+    date(2026, 3, 10),   # Maha Shivaratri
+    date(2026, 3, 30),   # Holi
+    date(2026, 4, 2),    # Ram Navami
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 4, 14),   # Dr. Ambedkar Jayanti
+    date(2026, 5, 1),    # May Day
+    date(2026, 8, 15),   # Independence Day
+    date(2026, 8, 17),   # Janmashtami
+    date(2026, 10, 2),   # Gandhi Jayanti
+    date(2026, 10, 20),  # Dussehra
+    date(2026, 11, 9),   # Diwali (Laxmi Pujan)
+    date(2026, 11, 10),  # Diwali (Balipratipada)
+    date(2026, 11, 30),  # Guru Nanak Jayanti
+    date(2026, 12, 25),  # Christmas
+]
+
+
+def now_ist() -> datetime:
+    """Get current time in IST."""
+    return datetime.now(IST)
+
+
+def is_market_holiday(dt: datetime | date | None = None) -> bool:
+    """Check if a date is an NSE holiday."""
+    if dt is None:
+        dt = now_ist()
+    check_date = dt.date() if isinstance(dt, datetime) else dt
+    return check_date in NSE_HOLIDAYS_2026
+
+
+def is_weekend(dt: datetime | date | None = None) -> bool:
+    """Check if a date is Saturday or Sunday."""
+    if dt is None:
+        dt = now_ist()
+    check_date = dt.date() if isinstance(dt, datetime) else dt
+    return check_date.weekday() >= 5  # Saturday=5, Sunday=6
+
+
+def is_trading_day(dt: datetime | date | None = None) -> bool:
+    """Check if a date is a valid trading day (weekday and not a holiday)."""
+    if dt is None:
+        dt = now_ist()
+    return not is_weekend(dt) and not is_market_holiday(dt)
+
+
+def is_market_open(dt: datetime | None = None) -> bool:
+    """Check if the market is currently open for trading."""
+    now = dt or now_ist()
+
+    if not is_trading_day(now):
+        return False
+
+    current_time = now.time()
+    return MARKET_OPEN <= current_time <= MARKET_CLOSE
+
+
+def is_pre_market(dt: datetime | None = None) -> bool:
+    """Check if we're in the pre-market window (9:00 - 9:15 IST)."""
+    now = dt or now_ist()
+    if not is_trading_day(now):
+        return False
+    current_time = now.time()
+    return time(9, 0) <= current_time < MARKET_OPEN
+
+
+def time_to_market_close(dt: datetime | None = None) -> float:
+    """Minutes remaining until market close. Returns 0 if market is closed."""
+    now = dt or now_ist()
+    if not is_market_open(now):
+        return 0.0
+
+    close_dt = now.replace(
+        hour=MARKET_CLOSE.hour,
+        minute=MARKET_CLOSE.minute,
+        second=0,
+        microsecond=0,
+    )
+    diff = (close_dt - now).total_seconds() / 60.0
+    return max(0.0, diff)
+
+
+def next_market_open(dt: datetime | None = None) -> datetime:
+    """Calculate the next market opening datetime in IST."""
+    now = dt or now_ist()
+    candidate = now.replace(
+        hour=MARKET_OPEN.hour,
+        minute=MARKET_OPEN.minute,
+        second=0,
+        microsecond=0,
+    )
+
+    # If market hasn't opened today yet and it's a trading day
+    if is_trading_day(now) and now.time() < MARKET_OPEN:
+        return candidate
+
+    # Move to next day
+    candidate += timedelta(days=1)
+    while not is_trading_day(candidate):
+        candidate += timedelta(days=1)
+
+    return candidate

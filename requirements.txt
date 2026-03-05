@@ -1,0 +1,39 @@
+# =============================================================
+# Stock AI — Python Dependencies
+# Install: pip install -r requirements.txt
+# =============================================================
+
+# Core Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+
+# Groww Trading API
+growwapi>=1.0.0
+pyotp>=2.9.0
+
+# AI / Anthropic Claude
+anthropic>=0.84.0
+
+# Telegram Bot
+python-telegram-bot>=22.0
+
+# Database (PyMongo native async — Motor is deprecated)
+pymongo>=4.10.0
+
+# Scheduler
+apscheduler>=3.11.0
+
+# Data Processing & Indicators
+pandas>=2.2.0
+numpy>=2.0.0
+
+# Config & Validation
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+python-dotenv>=1.0.0
+
+# Timezone
+pytz>=2024.2
+
+# HTTP Client
+httpx>=0.28.0
