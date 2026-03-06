@@ -93,6 +93,34 @@ def time_to_market_close(dt: datetime | None = None) -> float:
     return max(0.0, diff)
 
 
+def is_post_market(dt: datetime | None = None) -> bool:
+    """Check if we're in the post-market window (15:30 - 16:00 IST)."""
+    now = dt or now_ist()
+    if not is_trading_day(now):
+        return False
+    current_time = now.time()
+    return MARKET_CLOSE < current_time <= time(16, 0)
+
+
+def get_session_type(dt: datetime | None = None) -> str:
+    """Return the current trading session type.
+
+    Returns:
+        'pre'     — 09:00 - 09:15 IST (pre-market)
+        'market'  — 09:15 - 15:30 IST (regular market hours)
+        'post'    — 15:30 - 16:00 IST (post-market)
+        'closed'  — all other times / holidays / weekends
+    """
+    now = dt or now_ist()
+    if is_market_open(now):
+        return "market"
+    if is_pre_market(now):
+        return "pre"
+    if is_post_market(now):
+        return "post"
+    return "closed"
+
+
 def next_market_open(dt: datetime | None = None) -> datetime:
     """Calculate the next market opening datetime in IST."""
     now = dt or now_ist()

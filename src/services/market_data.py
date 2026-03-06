@@ -3,6 +3,8 @@
 import logging
 from datetime import datetime, timedelta
 
+from typing import Optional
+
 from src.models.holdings import Holding
 from src.models.market import Candle, Quote, TechnicalIndicators
 from src.services.groww_service import groww_service
@@ -49,7 +51,7 @@ class MarketDataService:
 
         return {
             "quote": quote,
-            "indicators": indicators,
+            "indicators": indicators or TechnicalIndicators(trading_symbol=trading_symbol),
             "candles_count": len(candles),
         }
 
@@ -88,18 +90,19 @@ class MarketDataService:
 
         return {
             "candles": candles,
-            "indicators": indicators,
+            "indicators": indicators or TechnicalIndicators(trading_symbol=trading_symbol),
             "candles_count": len(candles),
         }
 
     def _compute_indicators(
         self, symbol: str, candles: list[Candle]
-    ) -> TechnicalIndicators:
+    ) -> Optional[TechnicalIndicators]:
         """Compute all technical indicators from candle data."""
         closes = [c.close for c in candles]
 
+        # Bug fix #5: return None when insufficient data instead of empty model
         if len(closes) < 2:
-            return TechnicalIndicators(trading_symbol=symbol)
+            return None
 
         macd = compute_macd(closes)
         bb = compute_bollinger_bands(closes)

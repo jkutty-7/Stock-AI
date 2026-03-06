@@ -113,6 +113,14 @@ class PortfolioMonitor:
         enriched = self._enrich_holdings(holdings, prices, ohlc)
         snapshot = self._build_snapshot(enriched)
 
+        # Build micro-signal context for Claude (Phase 2)
+        try:
+            from src.services.micro_monitor import micro_monitor
+            symbols_for_micro = [h.trading_symbol for h in enriched]
+            micro_context = micro_monitor.get_all_context(symbols_for_micro)
+        except Exception:
+            micro_context = ""
+
         # Build context for AI
         context = {
             "total_invested": snapshot.total_invested,
@@ -120,6 +128,7 @@ class PortfolioMonitor:
             "total_pnl": snapshot.total_pnl,
             "total_pnl_pct": snapshot.total_pnl_pct,
             "day_pnl": snapshot.day_pnl,
+            "micro_context": micro_context,
             "holdings_summary": [
                 {
                     "symbol": h.trading_symbol,
@@ -152,12 +161,16 @@ class PortfolioMonitor:
         """Merge holdings with live price data to compute P&L."""
         enriched = []
         for h in holdings:
-            # Try different key formats that Groww might return
-            price_key = f"NSE_{h.trading_symbol}"
-            current_price = prices.get(price_key, 0)
-
-            ohlc_data = ohlc.get(price_key, {})
-            prev_close = ohlc_data.get("close", current_price)
+            # Bug fix #6: use helper that tries NSE_ then BSE_ prefix
+            current_price = groww_service.find_price(prices, h.trading_symbol)
+            ohlc_data = groww_service.find_ohlc(ohlc, h.trading_symbol)
+            # Bug fix #4: proper fallback chain for prev_close
+            prev_close = float(
+                ohlc_data.get("close")
+                or ohlc_data.get("previous_close")
+                or current_price
+                or 0
+            )
 
             total_invested = h.quantity * h.average_price
             current_value = h.quantity * current_price

@@ -42,6 +42,29 @@ class Settings(BaseSettings):
 
     # --- Logging ---
     log_level: str = Field(default="INFO", description="Logging level")
+    log_json: bool = Field(default=False, description="Emit logs as JSON (for log aggregators)")
+    log_file: str = Field(default="stock_ai.log", description="Log file path")
+
+    # --- Caching & Resilience ---
+    cache_ttl_seconds: int = Field(default=8, description="In-memory quote cache TTL in seconds")
+    max_retry_attempts: int = Field(default=3, description="Max Groww API retry attempts")
+    circuit_breaker_threshold: int = Field(default=5, description="Consecutive failures before circuit opens")
+    circuit_breaker_reset_seconds: int = Field(default=60, description="Seconds before circuit half-opens")
+
+    # --- Alert Cooldown ---
+    alert_cooldown_seconds: int = Field(default=300, description="Suppress duplicate symbol alerts within this window")
+
+    # --- REST API ---
+    api_key: str = Field(default="", description="Optional X-API-Key header auth (empty = disabled)")
+
+    # --- Micro Monitor ---
+    micro_poll_interval_seconds: int = Field(default=10, description="Price polling interval for fast signals")
+    micro_velocity_threshold_pct: float = Field(default=0.5, description="% change per tick to fire micro-alert")
+    micro_consecutive_ticks: int = Field(default=3, description="Consecutive same-direction ticks to fire micro-alert")
+
+    # --- Screener ---
+    screener_symbols_file: str = Field(default="nse_symbols.json", description="NSE universe file for screener")
+    screener_top_n: int = Field(default=10, description="Top N candidates to send to Claude for ranking")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

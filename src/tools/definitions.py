@@ -153,4 +153,105 @@ TOOL_DEFINITIONS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "get_micro_signal_summary",
+        "description": (
+            "Get the last 15 minutes of 10-second price tick data for a specific stock. "
+            "Returns: number of up/down ticks in the last 10 ticks, 1-minute momentum "
+            "(cumulative % change), current direction, and whether a volume spike "
+            "was detected. Use this BEFORE making hold/sell decisions — a stock with "
+            "8/9 DOWN ticks needs different treatment than one with 8/9 UP ticks "
+            "even if their current P&L looks similar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trading_symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol (e.g., 'RELIANCE', 'INFY')",
+                },
+            },
+            "required": ["trading_symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_sector_performance",
+        "description": (
+            "Get aggregated performance metrics for a market sector over the last N days. "
+            "Returns the average day change %, average total P&L %, and a list of "
+            "holdings in that sector with their individual performance. Useful for "
+            "understanding if a stock's movement is sector-wide or stock-specific."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sector": {
+                    "type": "string",
+                    "description": (
+                        "Sector name (e.g., 'IT', 'Financial Services', 'Pharma', "
+                        "'Automobile', 'Energy', 'FMCG', 'Metals', 'Power')"
+                    ),
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Look-back days for performance (default: 5, max: 30)",
+                    "minimum": 1,
+                    "maximum": 30,
+                },
+            },
+            "required": ["sector"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_peer_comparison",
+        "description": (
+            "Compare a stock against its sector peers. Fetches RSI, 5-day return, "
+            "and day volume ratio for 5 peer stocks and the target stock. "
+            "Useful for understanding relative strength — is a stock lagging its peers "
+            "(buy opportunity) or significantly outperforming (overvalued risk)?"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trading_symbol": {
+                    "type": "string",
+                    "description": "Target stock to compare (e.g., 'RELIANCE')",
+                },
+                "sector": {
+                    "type": "string",
+                    "description": (
+                        "Sector of the target stock to find peers "
+                        "(e.g., 'Energy', 'IT', 'Financial Services')"
+                    ),
+                },
+            },
+            "required": ["trading_symbol", "sector"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "screen_stocks",
+        "description": (
+            "Run the technical stock screener to find NSE stocks that may gain value. "
+            "Screens using RSI (oversold < 35), MACD bullish crossover, price vs SMA20, "
+            "volume spikes, and 52-week low proximity. Returns top candidates with "
+            "composite scores (0-100). Use this when the user asks about stock discovery, "
+            "investment opportunities, or undervalued stocks."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "top_n": {
+                    "type": "integer",
+                    "description": "Number of top candidates to return (default: 10, max: 20)",
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
 ]
