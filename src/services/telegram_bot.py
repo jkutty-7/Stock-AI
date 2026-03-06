@@ -81,6 +81,8 @@ class TelegramBotService:
             raise RuntimeError("Bot not initialized. Call initialize() first.")
         await self.app.initialize()
         await self.app.start()
+        # Drop any existing webhook or stale polling session from previous deploys
+        await self.app.bot.delete_webhook(drop_pending_updates=True)
         await self.app.updater.start_polling(drop_pending_updates=True)
         logger.info("Telegram bot polling started")
 

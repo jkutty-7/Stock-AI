@@ -59,7 +59,7 @@ class Database:
 
     async def disconnect(self) -> None:
         """Close the MongoDB connection."""
-        self.client.close()
+        await self.client.aclose()
         logger.info("MongoDB disconnected")
 
     # ----------------------------------------------------------------
