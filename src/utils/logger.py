@@ -10,14 +10,18 @@ def setup_logging() -> None:
     """Configure structured logging with console and file handlers."""
     log_format = "%(asctime)s | %(levelname)-8s | %(name)-35s | %(message)s"
 
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+
+    try:
+        handlers.append(logging.FileHandler("stock_ai.log", encoding="utf-8"))
+    except OSError:
+        pass  # Read-only filesystem (e.g. Vercel) — skip file logging
+
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format=log_format,
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler("stock_ai.log", encoding="utf-8"),
-        ],
+        handlers=handlers,
     )
 
     # Suppress noisy third-party loggers
