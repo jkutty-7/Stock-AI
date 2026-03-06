@@ -16,7 +16,7 @@ Run with: uvicorn src.main:app --host 0.0.0.0 --port 8000
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from src.api.router import router as api_router
 from src.config import settings
@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
 
     # 3. Initialize and start Telegram bot
     await telegram_service.initialize()
-    await telegram_service.start_polling()
+    await telegram_service.start()
     logger.info("Telegram bot started")
 
     # 4. Setup and start scheduler
@@ -103,6 +103,15 @@ app.include_router(api_router, prefix="/api/v1", tags=["API"])
 async def health():
     """Basic health check endpoint."""
     return {"status": "ok", "service": "stock-ai", "version": "0.1.0"}
+
+
+# Telegram webhook endpoint
+@app.post("/webhook", tags=["System"])
+async def telegram_webhook(request: Request):
+    """Receive Telegram updates via webhook."""
+    data = await request.json()
+    await telegram_service.process_update(data)
+    return {"ok": True}
 
 
 

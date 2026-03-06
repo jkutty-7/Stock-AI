@@ -75,21 +75,38 @@ class TelegramBotService:
 
         logger.info("Telegram bot initialized with command handlers")
 
-    async def start_polling(self) -> None:
-        """Start the bot updater. Called during FastAPI lifespan startup."""
+    async def start(self) -> None:
+        """Start the bot in webhook or polling mode depending on config."""
         if not self.app:
             raise RuntimeError("Bot not initialized. Call initialize() first.")
         await self.app.initialize()
         await self.app.start()
-        # Drop any existing webhook or stale polling session from previous deploys
-        await self.app.bot.delete_webhook(drop_pending_updates=True)
-        await self.app.updater.start_polling(drop_pending_updates=True)
-        logger.info("Telegram bot polling started")
+
+        if settings.telegram_webhook_url:
+            webhook_url = settings.telegram_webhook_url.rstrip("/") + "/webhook"
+            await self.app.bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True,
+            )
+            logger.info(f"Telegram bot webhook set: {webhook_url}")
+        else:
+            await self.app.bot.delete_webhook(drop_pending_updates=True)
+            await self.app.updater.start_polling(drop_pending_updates=True)
+            logger.info("Telegram bot polling started")
+
+    async def process_update(self, data: dict) -> None:
+        """Feed a raw webhook update into the bot dispatcher."""
+        from telegram import Update
+        update = Update.de_json(data, self.app.bot)
+        await self.app.process_update(update)
 
     async def stop(self) -> None:
         """Graceful shutdown of the bot."""
         if self.app:
-            await self.app.updater.stop()
+            if settings.telegram_webhook_url:
+                await self.app.bot.delete_webhook()
+            else:
+                await self.app.updater.stop()
             await self.app.stop()
             await self.app.shutdown()
             logger.info("Telegram bot stopped")

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # --- Telegram ---
     telegram_bot_token: str = Field(description="Telegram bot token from BotFather")
     telegram_chat_id: str = Field(description="Primary user chat ID for push notifications")
+    telegram_webhook_url: str = Field(default="", description="Public HTTPS URL for webhook (e.g. https://your-app.onrender.com). Leave empty to use polling.")
 
     # --- MongoDB ---
     mongodb_uri: str = Field(default="mongodb://localhost:27017", description="MongoDB connection URI")
