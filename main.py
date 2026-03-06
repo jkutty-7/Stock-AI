@@ -109,6 +109,9 @@ async def health():
 @app.post("/webhook", tags=["System"])
 async def telegram_webhook(request: Request):
     """Receive Telegram updates via webhook."""
+    body = await request.body()
+    if not body:
+        return {"ok": True}
     data = await request.json()
     await telegram_service.process_update(data)
     return {"ok": True}
