@@ -254,4 +254,29 @@ TOOL_DEFINITIONS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "get_signal_performance",
+        "description": (
+            "Get AI signal accuracy statistics for the last N days. Returns win rate "
+            "(percentage of winning trades), average P&L per trade, max win/loss, "
+            "confidence correlation (whether higher confidence signals perform better), "
+            "and target/stop-loss hit rates. Use this BEFORE generating BUY/SELL signals "
+            "to understand if your confidence scores have been reliable. If win rate is "
+            "below 50% or confidence correlation is negative, your signals may need "
+            "recalibration."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to analyze (default: 30, max: 365)",
+                    "minimum": 1,
+                    "maximum": 365,
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
 ]

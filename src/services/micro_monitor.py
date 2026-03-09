@@ -113,6 +113,9 @@ class MicroMonitor:
         self._task: asyncio.Task | None = None
         # Last alert time per symbol (for cooldown)
         self._last_alert: dict[str, float] = {}
+        # Active stop-losses (Feature 2: Stop-Loss Monitoring)
+        # Format: {"RELIANCE": [{"signal_id": "...", "stop_loss": 2450.0, "action": "BUY"}]}
+        self._active_stop_losses: dict[str, list[dict[str, Any]]] = {}
 
     # ----------------------------------------------------------------
     # Lifecycle
@@ -123,6 +126,9 @@ class MicroMonitor:
         if not self._running:
             self._running = True
             self._task = asyncio.create_task(self._polling_loop(), name="micro_monitor")
+            # Load active stop-losses on startup (Feature 2)
+            if settings.stop_loss_enabled:
+                asyncio.create_task(self.load_active_stop_losses())
             logger.info("MicroMonitor started (10-second polling)")
 
     def stop(self) -> None:
@@ -181,6 +187,14 @@ class MicroMonitor:
             buf = self._buffers[symbol]
             buf.push(price)
 
+            # Check for stop-loss breaches (Feature 2)
+            breaches = self._check_stop_loss_breach(symbol, price)
+            for breach in breaches:
+                try:
+                    await self._send_stop_loss_alert(symbol, price, breach)
+                except Exception as e:
+                    logger.error(f"Stop-loss alert failed for {symbol}: {e}")
+
             sig = self._evaluate(buf)
             if sig and not sig.alert_sent:
                 continue  # no alert condition met
@@ -206,6 +220,148 @@ class MicroMonitor:
         except Exception as e:
             logger.warning(f"MicroMonitor: could not load holdings: {e}")
             return []
+
+    # ----------------------------------------------------------------
+    # Stop-Loss Monitoring (Feature 2)
+    # ----------------------------------------------------------------
+
+    async def load_active_stop_losses(self) -> None:
+        """Load active stop-losses from trade_signals collection into memory.
+
+        Fetches all ACTIVE signals with stop_loss field set, groups by symbol.
+        Should be called on startup and periodically (hourly) to refresh.
+        """
+        if not settings.stop_loss_enabled:
+            return
+
+        from src.services.database import db
+
+        try:
+            # Fetch all ACTIVE signals with stop_loss defined
+            signals = await db.trade_signals.find(
+                {
+                    "status": {"$in": ["ACTIVE", None]},  # ACTIVE or unset
+                    "stop_loss": {"$exists": True, "$ne": None},
+                }
+            ).to_list(length=None)
+
+            # Group by symbol
+            self._active_stop_losses.clear()
+            for sig in signals:
+                symbol = sig.get("trading_symbol")
+                if not symbol:
+                    continue
+
+                if symbol not in self._active_stop_losses:
+                    self._active_stop_losses[symbol] = []
+
+                self._active_stop_losses[symbol].append({
+                    "signal_id": str(sig["_id"]),
+                    "action": sig.get("action", "BUY"),
+                    "stop_loss": float(sig["stop_loss"]),
+                    "confidence": float(sig.get("confidence", 0.0)),
+                })
+
+            total = sum(len(sls) for sls in self._active_stop_losses.values())
+            logger.info(
+                f"Loaded {total} active stop-losses across "
+                f"{len(self._active_stop_losses)} symbols"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to load active stop-losses: {e}")
+
+    def _check_stop_loss_breach(
+        self, symbol: str, current_price: float
+    ) -> list[dict[str, Any]]:
+        """Check if current price has breached any active stop-losses for a symbol.
+
+        Args:
+            symbol: Trading symbol
+            current_price: Current market price
+
+        Returns:
+            List of breached stop-loss dicts (each with signal_id, action, stop_loss)
+        """
+        if not settings.stop_loss_enabled:
+            return []
+
+        sls = self._active_stop_losses.get(symbol, [])
+        if not sls:
+            return []
+
+        breaches = []
+        grace = settings.stop_loss_grace_pct / 100.0
+
+        for sl in sls:
+            stop_price = sl["stop_loss"]
+            action = sl["action"]
+
+            # BUY signal: breach if price drops below stop_loss
+            if action in ["BUY", "STRONG_BUY"]:
+                threshold = stop_price * (1 - grace)
+                if current_price <= threshold:
+                    breaches.append(sl)
+
+            # SELL signal: breach if price rises above stop_loss
+            elif action in ["SELL", "STRONG_SELL"]:
+                threshold = stop_price * (1 + grace)
+                if current_price >= threshold:
+                    breaches.append(sl)
+
+        return breaches
+
+    async def _send_stop_loss_alert(
+        self, symbol: str, current_price: float, breach: dict[str, Any]
+    ) -> None:
+        """Send CRITICAL Telegram alert for stop-loss breach.
+
+        Args:
+            symbol: Trading symbol
+            current_price: Current price that breached stop-loss
+            breach: Dict with signal_id, action, stop_loss, confidence
+        """
+        from src.services.telegram_bot import telegram_service
+        from src.services.database import db
+
+        signal_id = breach["signal_id"]
+        stop_loss = breach["stop_loss"]
+        action = breach["action"]
+        confidence = breach.get("confidence", 0.0)
+
+        breach_pct = abs((current_price - stop_loss) / stop_loss * 100)
+
+        message = (
+            f"<b>STOP-LOSS HIT: {symbol}</b>\n\n"
+            f"Signal: {action}\n"
+            f"Stop-Loss: ₹{stop_loss:.2f}\n"
+            f"Current Price: ₹{current_price:.2f} ({breach_pct:.2f}% breach)\n"
+            f"Original Confidence: {confidence:.0%}\n\n"
+            f"RECOMMENDATION: Review position immediately and consider exiting."
+        )
+
+        try:
+            await telegram_service.send_message(message, parse_mode="HTML")
+
+            # Mark signal as TRIGGERED in database
+            await db.trade_signals.update_one(
+                {"_id": signal_id},
+                {"$set": {"status": "TRIGGERED", "trigger_timestamp": datetime.now()}}
+            )
+
+            # Remove from active stop-losses to avoid duplicate alerts
+            if symbol in self._active_stop_losses:
+                self._active_stop_losses[symbol] = [
+                    sl for sl in self._active_stop_losses[symbol] if sl["signal_id"] != signal_id
+                ]
+
+            logger.warning(
+                f"Stop-loss BREACH: {symbol} @ ₹{current_price:.2f} "
+                f"(stop: ₹{stop_loss:.2f}, signal: {signal_id})"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to send stop-loss alert for {symbol}: {e}")
 
     # ----------------------------------------------------------------
     # Signal evaluation

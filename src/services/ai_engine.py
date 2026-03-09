@@ -112,9 +112,14 @@ class AIAnalysisEngine:
             analysis_type=AnalysisType.STOCK_ANALYSIS,
         )
 
-    async def check_alerts(self, snapshot: dict[str, Any]) -> AnalysisResult:
+    async def check_alerts(
+        self,
+        snapshot: dict[str, Any],
+        drawdown_status: dict[str, Any] | None = None,
+        regime: dict[str, Any] | None = None
+    ) -> AnalysisResult:
         """Quick check for urgent alerts based on current portfolio state."""
-        user_prompt = self._build_alert_check_prompt(snapshot)
+        user_prompt = self._build_alert_check_prompt(snapshot, drawdown_status, regime)
         return await self._run_analysis(
             user_prompt=user_prompt,
             analysis_type=AnalysisType.ALERT_CHECK,
@@ -397,7 +402,12 @@ Focus on:
 
         return prompt
 
-    def _build_alert_check_prompt(self, snapshot: dict[str, Any]) -> str:
+    def _build_alert_check_prompt(
+        self,
+        snapshot: dict[str, Any],
+        drawdown_status: dict[str, Any] | None = None,
+        regime: dict[str, Any] | None = None
+    ) -> str:
         essential = {
             "total_invested": snapshot.get("total_invested"),
             "current_value": snapshot.get("current_value"),
@@ -413,12 +423,38 @@ Focus on:
                 for h in snapshot.get("holdings", [])
             ],
         }
+
+        # Feature 3: Drawdown breaker warning
+        drawdown_warning = ""
+        if drawdown_status and drawdown_status.get("breaker_triggered"):
+            drawdown_pct = drawdown_status.get("drawdown_pct", 0)
+            drawdown_warning = f"""\
+
+CRITICAL: DRAWDOWN BREAKER IS ACTIVE
+Portfolio is down {drawdown_pct:.2f}% from peak (threshold exceeded).
+DO NOT generate any BUY or STRONG_BUY signals.
+Focus ONLY on risk reduction: SELL/HOLD signals to protect capital.
+"""
+
+        # Feature 4: Market regime context
+        regime_context = ""
+        if regime:
+            regime_name = regime.get("regime", "UNKNOWN")
+            regime_score = regime.get("regime_score", 0)
+            min_confidence = regime.get("suggested_min_confidence", 0.7)
+            regime_context = f"""\
+
+MARKET REGIME: {regime_name} (score: {regime_score:.0f}/100)
+Minimum confidence threshold for signals: {min_confidence:.0%}
+Adjust your signal confidence accordingly based on current market conditions.
+"""
+
         return f"""\
 Quick portfolio check for urgent alerts. Flag ONLY items requiring immediate attention.
 
 Portfolio state:
 {json.dumps(essential, indent=2, default=str)}
-
+{drawdown_warning}{regime_context}
 Flag: stocks with day change > 5%, RSI extremes (< 30 or > 70), stop-loss breaches.
 If nothing urgent, return brief summary with empty signals array. Be concise."""
 

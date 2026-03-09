@@ -96,6 +96,14 @@ class ScreenerEngine:
             logger.warning("Screener: empty universe — nothing to screen")
             return []
 
+        # Feature 5: Apply liquidity filter
+        if settings.screener_min_liquidity > 0:
+            universe = await self._filter_by_liquidity(universe)
+            if not universe:
+                logger.warning("Screener: no symbols passed liquidity filter")
+                return []
+            logger.info(f"Screener: {len(universe)} symbols after liquidity filter")
+
         logger.info(f"Screener: starting full screen of {len(universe)} symbols")
         candidates: list[ScreenerCandidate] = []
 
@@ -348,6 +356,75 @@ class ScreenerEngine:
         except Exception as e:
             logger.warning(f"Screener: could not load holdings fallback: {e}")
             return []
+
+    async def _filter_by_liquidity(self, universe: list[dict]) -> list[dict]:
+        """Filter out illiquid stocks based on average daily volume (Feature 5).
+
+        Args:
+            universe: List of stock dicts with 'symbol' key
+
+        Returns:
+            Filtered universe with only liquid stocks (ADV >= min_liquidity)
+        """
+        from datetime import datetime, timedelta
+        from src.services.groww_service import groww_service
+
+        min_liquidity = settings.screener_min_liquidity
+        lookback_days = settings.screener_liquidity_lookback_days
+
+        logger.info(
+            f"Filtering universe for liquidity: min ADV = {min_liquidity:,} shares "
+            f"(lookback: {lookback_days} days)"
+        )
+
+        filtered_universe = []
+        end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        start_time = (datetime.now() - timedelta(days=lookback_days)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        for stock_dict in universe:
+            symbol = stock_dict["symbol"]
+            try:
+                # Fetch daily candles for volume data
+                candles = await groww_service.get_historical_candles(
+                    trading_symbol=symbol,
+                    exchange="NSE",
+                    segment="CASH",
+                    start_time=start_time,
+                    end_time=end_time,
+                    interval_minutes=1440,  # Daily
+                )
+
+                if not candles or len(candles) < 5:
+                    logger.debug(f"{symbol}: insufficient volume data — filtered out")
+                    continue
+
+                # Compute average daily volume
+                volumes = [int(c.volume) for c in candles if c.volume]
+                if not volumes:
+                    logger.debug(f"{symbol}: no volume data — filtered out")
+                    continue
+
+                avg_volume = sum(volumes) / len(volumes)
+
+                if avg_volume >= min_liquidity:
+                    filtered_universe.append(stock_dict)
+                    logger.debug(f"{symbol}: ADV {avg_volume:,.0f} — PASS")
+                else:
+                    logger.debug(f"{symbol}: ADV {avg_volume:,.0f} — FILTERED OUT")
+
+            except Exception as e:
+                logger.warning(f"{symbol}: liquidity check failed — {e}")
+                continue
+
+            # Small delay to avoid rate limiting (process ~1 symbol/sec)
+            await asyncio.sleep(1)
+
+        logger.info(
+            f"Liquidity filter complete: {len(filtered_universe)}/{len(universe)} symbols passed"
+        )
+        return filtered_universe
 
 
 # Singleton

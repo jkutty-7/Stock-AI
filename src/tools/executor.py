@@ -10,6 +10,7 @@ from typing import Any
 from src.services.database import db
 from src.services.groww_service import groww_service
 from src.services.market_data import market_data_service
+from src.services.outcome_tracker import outcome_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +216,45 @@ async def execute_tool(tool_name: str, tool_input: dict[str, Any]) -> dict | str
                 }
             except Exception as e:
                 return {"error": f"Screener unavailable: {e}"}
+
+        case "get_signal_performance":
+            days = min(tool_input.get("days", 30), 365)
+            try:
+                statistics = await outcome_tracker.get_signal_statistics(days)
+                if statistics is None:
+                    return {
+                        "error": f"No signal outcome data available for the last {days} days. "
+                        "Outcome tracking may be newly enabled or no signals have been closed yet."
+                    }
+                return {
+                    "period_days": statistics.period_days,
+                    "total_signals": statistics.total_signals,
+                    "open_signals": statistics.open_signals,
+                    "closed_signals": statistics.closed_signals,
+                    "wins": statistics.wins,
+                    "losses": statistics.losses,
+                    "breakevens": statistics.breakevens,
+                    "win_rate_pct": round(statistics.win_rate, 2),
+                    "avg_pnl_pct": round(statistics.avg_pnl_pct, 2),
+                    "total_pnl_pct": round(statistics.total_pnl_pct, 2),
+                    "max_win_pct": round(statistics.max_win_pct, 2),
+                    "max_loss_pct": round(statistics.max_loss_pct, 2),
+                    "avg_confidence_wins": round(statistics.avg_confidence_wins, 3),
+                    "avg_confidence_losses": round(statistics.avg_confidence_losses, 3),
+                    "confidence_correlation": round(statistics.confidence_correlation, 3),
+                    "target_hit_rate_pct": round(statistics.target_hit_rate * 100, 2) if statistics.target_hit_rate else None,
+                    "stop_loss_hit_rate_pct": round(statistics.stop_loss_hit_rate * 100, 2) if statistics.stop_loss_hit_rate else None,
+                    "avg_hold_hours": round(statistics.avg_hold_hours, 1) if statistics.avg_hold_hours else None,
+                    "interpretation": (
+                        f"Over the last {days} days: {statistics.win_rate:.1f}% win rate, "
+                        f"avg P&L {statistics.avg_pnl_pct:+.2f}%. "
+                        f"Confidence correlation: {statistics.confidence_correlation:+.3f} "
+                        f"({'positive - higher confidence signals perform better' if statistics.confidence_correlation > 0.05 else 'negative or neutral - confidence scores may need recalibration'})."
+                    )
+                }
+            except Exception as e:
+                logger.error(f"Error fetching signal performance: {e}", exc_info=True)
+                return {"error": f"Signal performance data unavailable: {e}"}
 
         case _:
             logger.warning(f"Unknown tool called: {tool_name}")

@@ -49,6 +49,10 @@ class Database:
     micro_signals: AsyncCollection
     screener_results: AsyncCollection
     ai_usage_logs: AsyncCollection
+    signal_outcomes: AsyncCollection  # v2.1: Signal outcome tracking
+    portfolio_peaks: AsyncCollection  # v2.1: Portfolio peak tracking for drawdown breaker
+    circuit_breaker_state: AsyncCollection  # v2.1: Circuit breaker state
+    market_regime: AsyncCollection  # v2.1: Market regime classification
 
     async def connect(self) -> None:
         """Initialize MongoDB connection and create indexes."""
@@ -64,28 +68,49 @@ class Database:
         self.micro_signals = self.db["micro_signals"]
         self.screener_results = self.db["screener_results"]
         self.ai_usage_logs = self.db["ai_usage_logs"]
+        self.signal_outcomes = self.db["signal_outcomes"]  # v2.1
+        self.portfolio_peaks = self.db["portfolio_peaks"]  # v2.1
+        self.circuit_breaker_state = self.db["circuit_breaker_state"]  # v2.1
+        self.market_regime = self.db["market_regime"]  # v2.1
 
         await self._create_indexes()
         logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
 
     async def _create_indexes(self) -> None:
-        """Create indexes (idempotent). TTL indexes handle automatic expiration."""
+        """Create indexes (idempotent). TTL indexes handle automatic expiration.
+
+        v2.1 improvements: Added compound indexes for query performance,
+        increased trade_signals TTL to 90 days for outcome tracking.
+        """
+        # Portfolio snapshots
         await self.portfolio_snapshots.create_index([("timestamp", DESCENDING)])
+        await self.portfolio_snapshots.create_index([("total_pnl_pct", DESCENDING)])
+
+        # Analysis logs
         await self.analysis_logs.create_index([("timestamp", DESCENDING)])
         await self.analysis_logs.create_index([("analysis_type", ASCENDING)])
+        await self.analysis_logs.create_index(
+            [("analysis_type", ASCENDING), ("timestamp", DESCENDING)]
+        )
 
         # Alerts — TTL 90 days
+        await self.alerts_history.create_index(
+            [("trading_symbol", ASCENDING), ("timestamp", DESCENDING)]
+        )
+        await self.alerts_history.create_index([("alert_type", ASCENDING)])
         await self._create_ttl_index(
             self.alerts_history, "timestamp", 90 * 86400, "alerts_ttl"
         )
 
-        # Trade signals — TTL 30 days
+        # Trade signals — TTL increased to 90 days (was 30) for outcome tracking
         await self.trade_signals.create_index(
             [("trading_symbol", ASCENDING), ("timestamp", DESCENDING)]
         )
         await self.trade_signals.create_index([("status", ASCENDING)])
+        await self.trade_signals.create_index([("confidence", DESCENDING)])
+        await self.trade_signals.create_index([("expires_at", ASCENDING)])
         await self._create_ttl_index(
-            self.trade_signals, "timestamp", 30 * 86400, "signals_ttl"
+            self.trade_signals, "timestamp", 90 * 86400, "signals_ttl"
         )
 
         # Micro signals — TTL 24 hours
@@ -102,6 +127,33 @@ class Database:
         # AI usage logs — TTL 90 days
         await self._create_ttl_index(
             self.ai_usage_logs, "timestamp", 90 * 86400, "ai_usage_ttl"
+        )
+
+        # Signal outcomes — TTL 365 days (1 year for backtesting)
+        await self.signal_outcomes.create_index(
+            [("trading_symbol", ASCENDING), ("signal_timestamp", DESCENDING)]
+        )
+        await self.signal_outcomes.create_index([("status", ASCENDING)])
+        await self.signal_outcomes.create_index([("win_loss", ASCENDING)])
+        await self._create_ttl_index(
+            self.signal_outcomes, "timestamp", 365 * 86400, "outcomes_ttl"
+        )
+
+        # Portfolio peaks — TTL 90 days (Feature 3: Drawdown Breaker)
+        await self.portfolio_peaks.create_index([("timestamp", DESCENDING)])
+        await self.portfolio_peaks.create_index([("is_current_peak", ASCENDING)])
+        await self._create_ttl_index(
+            self.portfolio_peaks, "timestamp", 90 * 86400, "peaks_ttl"
+        )
+
+        # Circuit breaker state — no TTL (persistent state, small collection)
+        await self.circuit_breaker_state.create_index([("_id", ASCENDING)], unique=True)
+
+        # Market regime — TTL 365 days (Feature 4: Regime Classifier)
+        await self.market_regime.create_index([("date", DESCENDING)], unique=True)
+        await self.market_regime.create_index([("is_current", ASCENDING)])
+        await self._create_ttl_index(
+            self.market_regime, "timestamp", 365 * 86400, "regime_ttl"
         )
 
     async def _create_ttl_index(
@@ -305,6 +357,130 @@ class Database:
             doc["_id"] = str(doc["_id"])
             results.append(doc)
         return results
+
+    # ----------------------------------------------------------------
+    # Signal Outcomes (v2.1)
+    # ----------------------------------------------------------------
+
+    async def save_signal_outcome(self, outcome: dict[str, Any]) -> str:
+        """Save a signal outcome record."""
+        outcome = dict(outcome)
+        # Ensure timestamps are BSON datetime
+        for ts_field in ["signal_timestamp", "entry_timestamp", "exit_timestamp", "timestamp"]:
+            if ts_field in outcome and outcome[ts_field]:
+                if isinstance(outcome[ts_field], str):
+                    outcome[ts_field] = datetime.fromisoformat(outcome[ts_field])
+                if isinstance(outcome[ts_field], datetime):
+                    outcome[ts_field] = _ensure_tz(outcome[ts_field])
+
+        res = await self.signal_outcomes.insert_one(outcome)
+        return str(res.inserted_id)
+
+    async def update_signal_outcome(self, outcome_id: str, updates: dict[str, Any]) -> None:
+        """Update a signal outcome (e.g., when position exits)."""
+        from bson import ObjectId
+
+        # Ensure timestamp updates are BSON datetime
+        if "exit_timestamp" in updates and isinstance(updates["exit_timestamp"], datetime):
+            updates["exit_timestamp"] = _ensure_tz(updates["exit_timestamp"])
+        if "timestamp" in updates and isinstance(updates["timestamp"], datetime):
+            updates["timestamp"] = _ensure_tz(updates["timestamp"])
+        else:
+            updates["timestamp"] = _utcnow()
+
+        await self.signal_outcomes.update_one(
+            {"_id": ObjectId(outcome_id)},
+            {"$set": updates},
+        )
+
+    async def get_outcomes_by_status(self, status: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Get outcomes filtered by status (OPEN, CLOSED, EXPIRED, CANCELLED)."""
+        cursor = (
+            self.signal_outcomes.find({"status": status})
+            .sort("signal_timestamp", DESCENDING)
+            .limit(limit)
+        )
+        results = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            results.append(doc)
+        return results
+
+    async def get_outcomes_by_symbol(
+        self, symbol: str, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Get signal outcomes for a specific trading symbol."""
+        cursor = (
+            self.signal_outcomes.find({"trading_symbol": symbol})
+            .sort("signal_timestamp", DESCENDING)
+            .skip(offset)
+            .limit(limit)
+        )
+        results = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            results.append(doc)
+        return results
+
+    async def get_signal_statistics(self, days: int = 30) -> dict[str, Any]:
+        """Aggregate signal outcome statistics for the last N days."""
+        from datetime import timedelta
+
+        cutoff = _utcnow() - timedelta(days=days)
+
+        pipeline = [
+            {"$match": {"signal_timestamp": {"$gte": cutoff}}},
+            {
+                "$group": {
+                    "_id": None,
+                    "total_signals": {"$sum": 1},
+                    "open_signals": {
+                        "$sum": {"$cond": [{"$eq": ["$status", "OPEN"]}, 1, 0]}
+                    },
+                    "closed_signals": {
+                        "$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, 1, 0]}
+                    },
+                    "wins": {
+                        "$sum": {"$cond": [{"$eq": ["$win_loss", "WIN"]}, 1, 0]}
+                    },
+                    "losses": {
+                        "$sum": {"$cond": [{"$eq": ["$win_loss", "LOSS"]}, 1, 0]}
+                    },
+                    "breakevens": {
+                        "$sum": {"$cond": [{"$eq": ["$win_loss", "BREAKEVEN"]}, 1, 0]}
+                    },
+                    "avg_pnl_pct": {"$avg": "$pnl_pct"},
+                    "total_pnl_pct": {"$sum": "$pnl_pct"},
+                    "max_win_pct": {"$max": "$pnl_pct"},
+                    "max_loss_pct": {"$min": "$pnl_pct"},
+                    "avg_confidence": {"$avg": "$original_confidence"},
+                }
+            },
+        ]
+
+        async for doc in self.signal_outcomes.aggregate(pipeline):
+            doc.pop("_id", None)
+            # Calculate win rate
+            closed = doc.get("closed_signals", 0)
+            wins = doc.get("wins", 0)
+            doc["win_rate"] = (wins / closed * 100) if closed > 0 else 0.0
+            return doc
+
+        # Return empty stats if no outcomes
+        return {
+            "total_signals": 0,
+            "open_signals": 0,
+            "closed_signals": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakevens": 0,
+            "win_rate": 0.0,
+            "avg_pnl_pct": 0.0,
+            "total_pnl_pct": 0.0,
+            "max_win_pct": 0.0,
+            "max_loss_pct": 0.0,
+            "avg_confidence": 0.0,
+        }
 
     # ----------------------------------------------------------------
     # Micro Signals

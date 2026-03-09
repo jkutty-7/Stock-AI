@@ -9,11 +9,14 @@ import logging
 from datetime import datetime
 
 from src.config import settings
-from src.models.analysis import AlertMessage, AnalysisResult
+from src.models.analysis import ActionType, AlertMessage, AnalysisResult
 from src.models.holdings import EnrichedHolding, Holding, PortfolioSnapshot, Position
 from src.services.ai_engine import ai_engine
 from src.services.database import db
+from src.services.drawdown_breaker import drawdown_breaker
 from src.services.groww_service import groww_service
+from src.services.outcome_tracker import outcome_tracker
+from src.services.regime_classifier import regime_classifier
 from src.services.telegram_bot import telegram_service
 
 logger = logging.getLogger(__name__)
@@ -49,19 +52,54 @@ class PortfolioMonitor:
             snapshot = self._build_snapshot(enriched)
             await db.save_snapshot(snapshot)
 
+            # Step 4a: Update peak & check drawdown breaker (Feature 3)
+            await drawdown_breaker.update_peak(snapshot.current_value, snapshot.total_invested)
+            drawdown_status = await drawdown_breaker.check_drawdown(snapshot.current_value)
+
+            # Step 4b: Load current market regime (Feature 4)
+            current_regime = await regime_classifier.get_current_regime()
+
             # Step 5: Check threshold-based alerts
             alerts = self._check_thresholds(enriched, snapshot)
 
-            # Step 6: Run AI alert check
+            # Step 6: Run AI alert check (with drawdown status for Feature 3)
             try:
                 analysis = await ai_engine.check_alerts(
-                    snapshot.model_dump(mode="json")
+                    snapshot.model_dump(mode="json"),
+                    drawdown_status=drawdown_status,
+                    regime=current_regime
                 )
                 await db.save_analysis(analysis)
 
                 # Step 7: Generate alerts for high-confidence AI signals
                 for signal in analysis.signals:
-                    if signal.confidence >= 0.7:
+                    # Base threshold
+                    min_confidence = 0.7
+
+                    # Feature 4: Adjust threshold based on market regime
+                    if current_regime and settings.regime_classification_enabled:
+                        regime_min_conf = current_regime.get("suggested_min_confidence", 0.7)
+                        min_confidence = max(min_confidence, regime_min_conf)
+
+                    if signal.confidence >= min_confidence:
+                        # Feature 3: Block BUY signals if drawdown breaker is triggered
+                        if signal.action in [ActionType.BUY, ActionType.STRONG_BUY]:
+                            if drawdown_status["breaker_triggered"]:
+                                logger.warning(
+                                    f"Drawdown breaker BLOCKED BUY signal for {signal.trading_symbol} "
+                                    f"(confidence: {signal.confidence:.2f}, drawdown: {drawdown_status['drawdown_pct']:.2f}%)"
+                                )
+                                continue  # Skip this signal
+                    else:
+                        # Signal filtered by regime threshold
+                        if current_regime:
+                            logger.info(
+                                f"Regime filter BLOCKED {signal.action.value} signal for {signal.trading_symbol} "
+                                f"(confidence: {signal.confidence:.2f}, regime min: {min_confidence:.2f}, "
+                                f"regime: {current_regime.get('regime', 'UNKNOWN')})"
+                            )
+                        continue  # Skip low-confidence signal
+
                         alert = AlertMessage(
                             timestamp=datetime.now(),
                             alert_type="AI_SIGNAL",
@@ -72,7 +110,17 @@ class PortfolioMonitor:
                             signal=signal,
                         )
                         alerts.append(alert)
-                        await db.save_signal(signal.model_dump(mode="json"))
+                        signal_id = await db.save_signal(signal.model_dump(mode="json"))
+
+                        # Track outcome for signal validation (Feature 1)
+                        try:
+                            await outcome_tracker.track_new_signal(
+                                signal_id=signal_id,
+                                signal=signal,
+                                entry_price=signal.current_price,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to track outcome for signal {signal_id}: {e}")
 
             except Exception as e:
                 logger.error(f"AI analysis failed (non-fatal): {e}")

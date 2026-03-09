@@ -65,6 +65,26 @@ class Settings(BaseSettings):
     # --- Screener ---
     screener_symbols_file: str = Field(default="nse_symbols.json", description="NSE universe file for screener")
     screener_top_n: int = Field(default=10, description="Top N candidates to send to Claude for ranking")
+    screener_min_liquidity: int = Field(default=500000, description="Minimum average daily volume (shares) to screen stocks")
+    screener_liquidity_lookback_days: int = Field(default=30, description="Days to compute average volume for liquidity filter")
+
+    # --- Signal Outcome Tracking ---
+    outcome_auto_track_enabled: bool = Field(default=True, description="Enable automatic outcome tracking from holdings")
+    outcome_auto_track_interval_hours: int = Field(default=6, description="Hours between auto-tracking job runs")
+    outcome_min_confidence_track: float = Field(default=0.6, description="Minimum signal confidence to track outcomes")
+
+    # --- Stop-Loss Monitoring ---
+    stop_loss_enabled: bool = Field(default=True, description="Enable real-time stop-loss breach monitoring")
+    stop_loss_grace_pct: float = Field(default=0.1, description="Grace % below stop-loss to avoid noise (0.1 = 0.1%)")
+
+    # --- Portfolio Drawdown Breaker ---
+    drawdown_breaker_enabled: bool = Field(default=True, description="Enable portfolio drawdown circuit breaker")
+    drawdown_breaker_threshold_pct: float = Field(default=8.0, description="Drawdown % threshold to trigger breaker (default 8%)")
+    drawdown_breaker_auto_reset: bool = Field(default=True, description="Auto-reset breaker when drawdown recovers to 50% of threshold")
+
+    # --- Market Regime Classification ---
+    regime_classification_enabled: bool = Field(default=True, description="Enable daily market regime classification")
+    regime_index_symbol: str = Field(default="NIFTY 50", description="Index symbol for regime classification")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

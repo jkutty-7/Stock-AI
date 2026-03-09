@@ -8,6 +8,7 @@ V2 improvements:
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from src.config import settings
 
@@ -32,11 +33,14 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     """
     from src.scheduler.jobs import (
         daily_full_analysis_job,
+        daily_regime_classification_job,
         daily_screener_job,
         health_check_job,
         market_close_job,
         market_open_job,
         monitoring_job,
+        outcome_tracking_job,
+        reload_stop_losses_job,
     )
 
     # 1. Main monitoring cycle
@@ -117,6 +121,43 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         ),
         id="daily_screener",
         name="Daily Stock Screener",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # 7. Outcome tracking job - runs every N hours to detect position exits (Feature 1)
+    scheduler.add_job(
+        outcome_tracking_job,
+        trigger=IntervalTrigger(hours=settings.outcome_auto_track_interval_hours),
+        id="outcome_tracking",
+        name="Signal Outcome Auto-Tracking",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # 8. Reload stop-losses hourly during market hours (Feature 2)
+    scheduler.add_job(
+        reload_stop_losses_job,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour=f"{settings.market_open_hour}-{settings.market_close_hour}",
+            minute="0",  # Every hour on the hour
+            timezone=IST,
+        ),
+        id="reload_stop_losses",
+        name="Reload Active Stop-Losses",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # 9. Daily regime classification at 9:20 AM (Feature 4)
+    scheduler.add_job(
+        daily_regime_classification_job,
+        trigger=CronTrigger(
+            day_of_week="mon-fri", hour=9, minute=20, timezone=IST
+        ),
+        id="regime_classification",
+        name="Daily Market Regime Classification",
         replace_existing=True,
         max_instances=1,
     )
