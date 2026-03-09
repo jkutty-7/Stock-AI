@@ -147,7 +147,7 @@ class Database:
         )
 
         # Circuit breaker state — no TTL (persistent state, small collection)
-        await self.circuit_breaker_state.create_index([("_id", ASCENDING)], unique=True)
+        # Note: _id field already has a unique index by default, no additional index needed
 
         # Market regime — TTL 365 days (Feature 4: Regime Classifier)
         await self.market_regime.create_index([("date", DESCENDING)], unique=True)
