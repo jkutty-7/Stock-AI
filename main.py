@@ -135,3 +135,10 @@ async def telegram_webhook(request: Request):
     data = await request.json()
     await telegram_service.process_update(data)
     return {"ok": True}
+
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)

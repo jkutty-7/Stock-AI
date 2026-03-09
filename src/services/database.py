@@ -75,9 +75,8 @@ class Database:
         await self.analysis_logs.create_index([("analysis_type", ASCENDING)])
 
         # Alerts — TTL 90 days
-        await self.alerts_history.create_index([("timestamp", DESCENDING)])
-        await self.alerts_history.create_index(
-            [("timestamp", ASCENDING)], expireAfterSeconds=90 * 86400, name="alerts_ttl"
+        await self._create_ttl_index(
+            self.alerts_history, "timestamp", 90 * 86400, "alerts_ttl"
         )
 
         # Trade signals — TTL 30 days
@@ -85,27 +84,65 @@ class Database:
             [("trading_symbol", ASCENDING), ("timestamp", DESCENDING)]
         )
         await self.trade_signals.create_index([("status", ASCENDING)])
-        await self.trade_signals.create_index(
-            [("timestamp", ASCENDING)], expireAfterSeconds=30 * 86400, name="signals_ttl"
+        await self._create_ttl_index(
+            self.trade_signals, "timestamp", 30 * 86400, "signals_ttl"
         )
 
         # Micro signals — TTL 24 hours
         await self.micro_signals.create_index([("symbol", ASCENDING), ("timestamp", DESCENDING)])
-        await self.micro_signals.create_index(
-            [("timestamp", ASCENDING)], expireAfterSeconds=86400, name="micro_ttl"
+        await self._create_ttl_index(
+            self.micro_signals, "timestamp", 86400, "micro_ttl"
         )
 
         # Screener results — TTL 30 days
-        await self.screener_results.create_index([("timestamp", DESCENDING)])
-        await self.screener_results.create_index(
-            [("timestamp", ASCENDING)], expireAfterSeconds=30 * 86400, name="screener_ttl"
+        await self._create_ttl_index(
+            self.screener_results, "timestamp", 30 * 86400, "screener_ttl"
         )
 
         # AI usage logs — TTL 90 days
-        await self.ai_usage_logs.create_index([("timestamp", DESCENDING)])
-        await self.ai_usage_logs.create_index(
-            [("timestamp", ASCENDING)], expireAfterSeconds=90 * 86400, name="ai_usage_ttl"
+        await self._create_ttl_index(
+            self.ai_usage_logs, "timestamp", 90 * 86400, "ai_usage_ttl"
         )
+
+    async def _create_ttl_index(
+        self,
+        collection: AsyncCollection,
+        field: str,
+        expire_seconds: int,
+        index_name: str,
+    ) -> None:
+        """Create a TTL index, handling conflicts by dropping old indexes first."""
+        from pymongo.errors import OperationFailure
+
+        try:
+            await collection.create_index(
+                [(field, ASCENDING)],
+                expireAfterSeconds=expire_seconds,
+                name=index_name,
+            )
+        except OperationFailure as e:
+            if e.code == 85:  # IndexOptionsConflict
+                logger.info(
+                    f"Dropping conflicting index on {collection.name}.{field} to recreate with TTL"
+                )
+                # Drop all indexes on this field and recreate
+                indexes = await collection.index_information()
+                for idx_name, idx_info in indexes.items():
+                    # Check if this index uses our field
+                    if idx_name != "_id_" and any(
+                        key == field for key, _ in idx_info.get("key", [])
+                    ):
+                        await collection.drop_index(idx_name)
+                        logger.debug(f"Dropped index {idx_name}")
+                # Now create the TTL index
+                await collection.create_index(
+                    [(field, ASCENDING)],
+                    expireAfterSeconds=expire_seconds,
+                    name=index_name,
+                )
+                logger.info(f"Created TTL index {index_name} on {collection.name}.{field}")
+            else:
+                raise
 
     async def disconnect(self) -> None:
         """Close the MongoDB connection."""
