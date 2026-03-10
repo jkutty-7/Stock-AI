@@ -207,18 +207,51 @@ class MicroMonitor:
                     logger.warning(f"Micro-alert send failed for {symbol}: {e}")
 
     async def _load_holding_symbols(self) -> list[str]:
-        """Fetch holding symbols and pre-initialize buffers."""
+        """Fetch holding symbols and pre-initialize buffers.
+
+        Includes both:
+        - Holdings (settled stocks)
+        - CNC positions (delivery stocks pending T+2 settlement)
+        """
         try:
             from src.services.groww_service import groww_service
+
+            # Get holdings (settled stocks)
             holdings = await groww_service.get_holdings()
-            symbols = [h.trading_symbol for h in holdings]
-            for s in symbols:
+            symbols_from_holdings = [h.trading_symbol for h in holdings]
+
+            # Get CNC positions (delivery stocks not yet settled)
+            try:
+                positions = await groww_service.get_positions(segment="CASH")
+                # Filter for CNC (Cash and Carry = delivery) products only
+                symbols_from_positions = [
+                    p.trading_symbol for p in positions
+                    if p.product == "CNC" and p.quantity > 0
+                ]
+            except Exception as e:
+                logger.warning(f"Could not fetch positions: {e}")
+                symbols_from_positions = []
+
+            # Combine and deduplicate
+            all_symbols = list(set(symbols_from_holdings + symbols_from_positions))
+
+            # Initialize buffers
+            for s in all_symbols:
                 if s not in self._buffers:
                     self._buffers[s] = _SymbolBuffer(s)
-            logger.info(f"MicroMonitor tracking {len(symbols)} symbols: {symbols}")
-            return symbols
+
+            if symbols_from_positions:
+                logger.info(
+                    f"MicroMonitor tracking {len(all_symbols)} symbols: "
+                    f"{len(symbols_from_holdings)} holdings + {len(symbols_from_positions)} CNC positions"
+                )
+            else:
+                logger.info(f"MicroMonitor tracking {len(all_symbols)} symbols (holdings only)")
+
+            logger.debug(f"Symbols: {all_symbols}")
+            return all_symbols
         except Exception as e:
-            logger.warning(f"MicroMonitor: could not load holdings: {e}")
+            logger.warning(f"MicroMonitor: could not load symbols: {e}")
             return []
 
     # ----------------------------------------------------------------

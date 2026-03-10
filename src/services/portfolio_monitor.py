@@ -25,6 +25,47 @@ logger = logging.getLogger(__name__)
 class PortfolioMonitor:
     """Orchestrates the full monitoring cycle."""
 
+    async def _get_all_holdings(self) -> list[Holding]:
+        """Fetch all holdings including both settled stocks and CNC positions.
+
+        Returns:
+            Combined list of holdings from:
+            - Holdings API (settled stocks)
+            - CNC positions from Positions API (delivery stocks pending T+2 settlement)
+        """
+        # Get regular holdings
+        holdings = await groww_service.get_holdings()
+
+        # Get CNC positions (delivery positions not yet settled)
+        try:
+            positions = await groww_service.get_positions(segment="CASH")
+            # Convert CNC positions to Holding objects
+            for pos in positions:
+                if pos.product == "CNC" and pos.quantity > 0:
+                    # Create a pseudo-Holding from the position
+                    holding = Holding(
+                        isin=pos.symbol_isin,
+                        trading_symbol=pos.trading_symbol,
+                        quantity=pos.quantity,
+                        average_price=pos.net_price,
+                        pledge_quantity=0,
+                        demat_locked_quantity=0,
+                        groww_locked_quantity=0,
+                        repledge_quantity=0,
+                        t1_quantity=0,
+                        demat_free_quantity=pos.quantity,
+                        corporate_action_additional_quantity=0,
+                        active_demat_transfer_quantity=0,
+                    )
+                    # Only add if not already in holdings (avoid duplicates)
+                    if not any(h.trading_symbol == holding.trading_symbol for h in holdings):
+                        holdings.append(holding)
+                        logger.debug(f"Added CNC position as holding: {holding.trading_symbol}")
+        except Exception as e:
+            logger.warning(f"Could not fetch CNC positions: {e}")
+
+        return holdings
+
     async def run_monitoring_cycle(self) -> None:
         """Main 15-minute monitoring cycle.
 
@@ -34,8 +75,8 @@ class PortfolioMonitor:
         logger.info("Starting monitoring cycle")
 
         try:
-            # Step 1: Fetch current holdings
-            holdings = await groww_service.get_holdings()
+            # Step 1: Fetch current holdings (including CNC positions)
+            holdings = await self._get_all_holdings()
             if not holdings:
                 logger.warning("No holdings found — skipping monitoring cycle")
                 return
@@ -153,8 +194,8 @@ class PortfolioMonitor:
         """
         logger.info("Running full portfolio analysis")
 
-        # Fetch and enrich holdings
-        holdings = await groww_service.get_holdings()
+        # Fetch and enrich holdings (including CNC positions)
+        holdings = await self._get_all_holdings()
         symbols = [h.trading_symbol for h in holdings]
         prices = await groww_service.get_bulk_ltp(symbols)
         ohlc = await groww_service.get_bulk_ohlc(symbols)
