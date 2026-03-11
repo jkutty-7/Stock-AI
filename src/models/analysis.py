@@ -15,6 +15,7 @@ class ActionType(str, Enum):
     HOLD = "HOLD"
     STRONG_BUY = "STRONG_BUY"
     STRONG_SELL = "STRONG_SELL"
+    WATCH = "WATCH"
 
 
 class AnalysisType(str, Enum):

@@ -20,7 +20,7 @@ from typing import Any, Optional
 import anthropic
 
 from src.config import settings
-from src.models.analysis import AnalysisResult, AnalysisType, TradeSignal
+from src.models.analysis import ActionType, AnalysisResult, AnalysisType, TradeSignal
 from src.tools.definitions import TOOL_DEFINITIONS
 from src.tools.executor import execute_tool
 from src.utils.exceptions import AIAnalysisError
@@ -66,7 +66,7 @@ When providing your final analysis, structure your response as a valid JSON obje
     "signals": [
         {
             "trading_symbol": "SYMBOL",
-            "action": "BUY" | "SELL" | "HOLD" | "STRONG_BUY" | "STRONG_SELL",
+            "action": "BUY" | "SELL" | "HOLD" | "STRONG_BUY" | "STRONG_SELL" | "WATCH",
             "confidence": 0.0 to 1.0,
             "target_price": number or null,
             "stop_loss": number or null,
@@ -323,10 +323,18 @@ class AIAnalysisEngine:
                         downside = abs(entry - s["stop_loss"])
                         if downside > 0:
                             s["risk_reward_ratio"] = round(upside / downside, 2)
-                signals.append(TradeSignal(**{
-                    k: v for k, v in s.items()
-                    if k in TradeSignal.model_fields
-                }))
+                # Normalise unknown action values to HOLD rather than dropping the signal
+                valid_actions = {a.value for a in ActionType}
+                if s.get("action") not in valid_actions:
+                    logger.debug(f"Unknown action '{s.get('action')}' for {s.get('trading_symbol')} — defaulting to HOLD")
+                    s["action"] = "HOLD"
+                try:
+                    signals.append(TradeSignal(**{
+                        k: v for k, v in s.items()
+                        if k in TradeSignal.model_fields
+                    }))
+                except Exception as sig_err:
+                    logger.debug(f"Skipping invalid signal {s.get('trading_symbol')}: {sig_err}")
             return AnalysisResult(
                 analysis_type=analysis_type,
                 timestamp=datetime.now(),

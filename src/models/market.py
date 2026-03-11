@@ -29,7 +29,7 @@ class Quote(BaseModel):
     total_sell_quantity: int = 0
     upper_circuit_limit: Optional[float] = None
     lower_circuit_limit: Optional[float] = None
-    last_trade_time: Optional[str] = None
+    last_trade_time: Optional[str | int] = None
 
 
 class Candle(BaseModel):
