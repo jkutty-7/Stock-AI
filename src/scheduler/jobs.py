@@ -1,35 +1,52 @@
 """Scheduled job functions.
 
-Each function is invoked by APScheduler at the configured schedule.
-All jobs are wrapped in try/except to prevent scheduler crashes.
+V2 improvements:
+- _timed_job() wrapper logs execution duration and success/failure
+- Market holiday check at TOP of each job (before any work)
+- Failures send Telegram error notification (not just logger.error)
+- daily_screener_job added (Phase 3)
 """
 
 import logging
+import time
 from datetime import datetime
 
 from src.services.database import db
 from src.services.groww_service import groww_service
+from src.services.outcome_tracker import outcome_tracker
 from src.services.portfolio_monitor import portfolio_monitor
 from src.services.telegram_bot import telegram_service
-from src.utils.formatters import format_analysis_result, format_portfolio_summary
+from src.utils.formatters import format_analysis_result, format_portfolio_summary, format_screener_results
 from src.utils.market_hours import is_market_holiday, now_ist
 
 logger = logging.getLogger(__name__)
 
 
-async def monitoring_job() -> None:
-    """15-minute portfolio monitoring cycle.
-
-    Skips execution on market holidays.
-    """
-    if is_market_holiday(now_ist()):
-        logger.info("Market holiday — skipping monitoring cycle")
-        return
-
+async def _timed_job(name: str, coro) -> None:
+    """Wrapper that logs job duration and sends Telegram alert on failure."""
+    start = time.monotonic()
     try:
-        await portfolio_monitor.run_monitoring_cycle()
+        await coro
+        elapsed = time.monotonic() - start
+        logger.info(f"[Job:{name}] completed in {elapsed:.1f}s")
     except Exception as e:
-        logger.error(f"Monitoring job failed: {e}", exc_info=True)
+        elapsed = time.monotonic() - start
+        logger.error(f"[Job:{name}] FAILED after {elapsed:.1f}s: {e}", exc_info=True)
+        try:
+            await telegram_service.send_error_notification(
+                f"Scheduled job '{name}' failed: {str(e)[:400]}"
+            )
+        except Exception:
+            logger.error(f"[Job:{name}] Could not send failure notification")
+
+
+async def monitoring_job() -> None:
+    """15-minute portfolio monitoring cycle."""
+    # Holiday check first — before any API calls
+    if is_market_holiday(now_ist()):
+        logger.info("[Job:monitoring] Market holiday — skipping")
+        return
+    await _timed_job("monitoring", portfolio_monitor.run_monitoring_cycle())
 
 
 async def market_open_job() -> None:
@@ -37,21 +54,17 @@ async def market_open_job() -> None:
     if is_market_holiday(now_ist()):
         return
 
-    try:
+    async def _open():
         logger.info("Market opening — re-authenticating and sending status")
-
-        # Re-authenticate (TOTP token may have changed overnight)
         await groww_service.authenticate()
-
-        # Send opening notification
         await telegram_service.send_message(
             "<b>Market Open</b>\n\n"
             f"NSE/BSE markets are now open.\n"
             f"Monitoring started at {now_ist().strftime('%H:%M IST')}.\n"
-            f"Next check in {15} minutes."
+            f"10-second price tracking active. Next AI check in 15 minutes."
         )
-    except Exception as e:
-        logger.error(f"Market open job failed: {e}", exc_info=True)
+
+    await _timed_job("market_open", _open())
 
 
 async def market_close_job() -> None:
@@ -59,25 +72,19 @@ async def market_close_job() -> None:
     if is_market_holiday(now_ist()):
         return
 
-    try:
+    async def _close():
         logger.info("Market closed — sending daily summary")
-
-        # Run one final monitoring cycle to capture closing data
         await portfolio_monitor.run_monitoring_cycle()
-
-        # Send summary
         snapshot = await db.get_latest_snapshot()
         if snapshot:
             summary = format_portfolio_summary(snapshot)
-            await telegram_service.send_message(
-                f"<b>Market Close Summary</b>\n\n{summary}"
-            )
+            await telegram_service.send_message(f"<b>Market Close Summary</b>\n\n{summary}")
         else:
             await telegram_service.send_message(
                 "<b>Market Close</b>\n\nNo portfolio data available for today's summary."
             )
-    except Exception as e:
-        logger.error(f"Market close job failed: {e}", exc_info=True)
+
+    await _timed_job("market_close", _close())
 
 
 async def daily_full_analysis_job() -> None:
@@ -85,40 +92,113 @@ async def daily_full_analysis_job() -> None:
     if is_market_holiday(now_ist()):
         return
 
-    try:
+    async def _analysis():
         logger.info("Running daily full AI analysis")
-
         analysis = await portfolio_monitor.run_full_analysis()
         text = format_analysis_result(analysis)
-        await telegram_service.send_message(
-            f"<b>Daily AI Analysis</b>\n\n{text}"
-        )
-    except Exception as e:
-        logger.error(f"Daily analysis job failed: {e}", exc_info=True)
-        await telegram_service.send_error_notification(
-            f"Daily analysis failed: {str(e)[:500]}"
-        )
+        await telegram_service.send_message(f"<b>Daily AI Analysis</b>\n\n{text}")
+
+    await _timed_job("daily_analysis", _analysis())
 
 
 async def health_check_job() -> None:
-    """Verify all systems are operational.
-
-    Checks: Groww API connectivity, MongoDB connectivity.
-    Sends a Telegram error notification if anything is down.
-    """
-    try:
-        # Check Groww API
+    """Verify all systems are operational."""
+    async def _check():
         await groww_service.get_user_profile()
-
-        # Check MongoDB
         await db.portfolio_snapshots.find_one()
+        logger.info("[Job:health_check] all systems OK")
 
-        logger.info("Health check: all systems OK")
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        try:
-            await telegram_service.send_error_notification(
-                f"Health check failed: {str(e)[:500]}"
+    await _timed_job("health_check", _check())
+
+
+async def outcome_tracking_job() -> None:
+    """Auto-track signal outcomes by detecting position exits (Feature 1)."""
+    async def _track():
+        logger.info("Running outcome auto-tracking job")
+        result = await outcome_tracker.auto_track_from_holdings()
+        logger.info(
+            f"Outcome tracking complete: {result['closed']} closed, "
+            f"{result['still_open']} still open, {result['errors']} errors"
+        )
+
+        # Send notification if outcomes were closed
+        if result["closed"] > 0:
+            await telegram_service.send_message(
+                f"<b>Outcome Tracker</b>\n\n"
+                f"Detected {result['closed']} position exit(s).\n"
+                f"Open positions: {result['still_open']}"
             )
-        except Exception:
-            logger.error("Could not send health check failure notification")
+
+    await _timed_job("outcome_tracking", _track())
+
+
+async def reload_stop_losses_job() -> None:
+    """Reload active stop-losses from database into MicroMonitor (Feature 2)."""
+    async def _reload():
+        from src.services.micro_monitor import micro_monitor
+        logger.info("Reloading active stop-losses into MicroMonitor")
+        await micro_monitor.load_active_stop_losses()
+
+    await _timed_job("reload_stop_losses", _reload())
+
+
+async def daily_regime_classification_job() -> None:
+    """Classify market regime daily at 9:20 AM (Feature 4)."""
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _classify():
+        from src.services.regime_classifier import regime_classifier
+        logger.info("Running daily market regime classification")
+        result = await regime_classifier.classify_daily_regime()
+
+        if result["success"]:
+            regime = result["regime"]
+            score = result["regime_score"]
+            message = (
+                f"<b>Market Regime Classified</b>\n\n"
+                f"Regime: {regime}\n"
+                f"Score: {score:.1f}/100\n"
+                f"Nifty 50: ₹{result['indicators']['price']:.2f}\n"
+                f"RSI(14): {result['indicators']['rsi']:.1f}\n"
+                f"Volatility: {result['indicators']['volatility']:.2f}%"
+            )
+            await telegram_service.send_message(message, parse_mode="HTML")
+        else:
+            logger.warning(f"Regime classification failed: {result.get('message')}")
+
+    await _timed_job("regime_classification", _classify())
+
+
+async def daily_screener_job() -> None:
+    """Run daily stock screener at 9:30 AM (Phase 3)."""
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _screen():
+        from src.services.screener import screener_engine
+        from src.services.ai_engine import ai_engine
+        from src.config import settings
+
+        logger.info("Running daily stock screener")
+        candidates = await screener_engine.run_full_screen()
+        top = candidates[:settings.screener_top_n]
+        if not top:
+            logger.info("Screener found no candidates today")
+            return
+
+        analysis = await ai_engine.analyze_screener_candidates([c.to_dict() for c in top])
+        result_doc = {
+            "timestamp": datetime.now(),
+            "candidates": [c.to_dict() for c in top],
+            "claude_analysis": analysis.model_dump(mode="json"),
+        }
+        await db.save_screener_result(result_doc)
+
+        text = format_screener_results(result_doc)
+        await telegram_service.send_message(f"<b>Daily Screener Results</b>\n\n{text}")
+
+    try:
+        await _timed_job("daily_screener", _screen())
+    except ImportError:
+        logger.info("Screener module not yet active — skipping daily_screener_job")

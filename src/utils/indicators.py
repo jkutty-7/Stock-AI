@@ -182,6 +182,174 @@ def compute_bollinger_bands(
     return result
 
 
+def calculate_atr(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> Optional[float]:
+    """Average True Range — measures volatility, useful for stop-loss sizing.
+
+    Args:
+        highs: Daily high prices (oldest first).
+        lows: Daily low prices (oldest first).
+        closes: Daily close prices (oldest first).
+        period: ATR lookback period (default: 14).
+
+    Returns:
+        ATR value or None if insufficient data.
+    """
+    if len(closes) < period + 1 or len(highs) < period + 1 or len(lows) < period + 1:
+        return None
+
+    h = np.array(highs, dtype=float)
+    l = np.array(lows, dtype=float)
+    c = np.array(closes, dtype=float)
+
+    # True Range = max(H-L, |H-prev_C|, |L-prev_C|)
+    tr = np.maximum(
+        h[1:] - l[1:],
+        np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])),
+    )
+
+    if len(tr) < period:
+        return None
+
+    # Wilder's smoothed ATR
+    atr = np.mean(tr[:period])
+    for i in range(period, len(tr)):
+        atr = (atr * (period - 1) + tr[i]) / period
+
+    return float(round(atr, 4))
+
+
+def calculate_adx(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> Optional[float]:
+    """Average Directional Index — measures trend strength (0-100).
+
+    > 25 = strong trend, < 20 = weak/sideways.
+
+    Args:
+        highs: Daily high prices (oldest first).
+        lows: Daily low prices (oldest first).
+        closes: Daily close prices (oldest first).
+        period: ADX period (default: 14).
+
+    Returns:
+        ADX value (0-100) or None if insufficient data.
+    """
+    min_len = period * 2 + 1
+    if len(closes) < min_len or len(highs) < min_len or len(lows) < min_len:
+        return None
+
+    h = np.array(highs, dtype=float)
+    l = np.array(lows, dtype=float)
+    c = np.array(closes, dtype=float)
+
+    # True Range
+    tr = np.maximum(
+        h[1:] - l[1:],
+        np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])),
+    )
+
+    # Directional Movement
+    up_move = h[1:] - h[:-1]
+    down_move = l[:-1] - l[1:]
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    # Wilder smoothing
+    def _wilder_smooth(arr: np.ndarray) -> np.ndarray:
+        out = np.empty_like(arr)
+        out[0] = np.mean(arr[:period])
+        for i in range(1, len(arr)):
+            out[i] = (out[i - 1] * (period - 1) + arr[i]) / period
+        return out
+
+    n = len(tr) - period + 1
+    if n < period:
+        return None
+
+    smooth_tr = _wilder_smooth(tr[period - 1 :])
+    smooth_plus = _wilder_smooth(plus_dm[period - 1 :])
+    smooth_minus = _wilder_smooth(minus_dm[period - 1 :])
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        plus_di = np.where(smooth_tr > 0, 100 * smooth_plus / smooth_tr, 0.0)
+        minus_di = np.where(smooth_tr > 0, 100 * smooth_minus / smooth_tr, 0.0)
+        dx = np.where(
+            (plus_di + minus_di) > 0,
+            100 * np.abs(plus_di - minus_di) / (plus_di + minus_di),
+            0.0,
+        )
+
+    # ADX = smoothed DX
+    if len(dx) < period:
+        return None
+
+    adx = np.mean(dx[:period])
+    for i in range(period, len(dx)):
+        adx = (adx * (period - 1) + dx[i]) / period
+
+    return float(round(adx, 2))
+
+
+def calculate_vwap(prices: list[float], volumes: list[int]) -> Optional[float]:
+    """Volume Weighted Average Price.
+
+    Args:
+        prices: Typical prices or close prices (oldest first).
+        volumes: Corresponding volumes.
+
+    Returns:
+        VWAP value or None if data is missing/volumes are all zero.
+    """
+    if not prices or not volumes or len(prices) != len(volumes):
+        return None
+
+    p = np.array(prices, dtype=float)
+    v = np.array(volumes, dtype=float)
+    total_volume = np.sum(v)
+    if total_volume == 0:
+        return None
+
+    return float(round(np.sum(p * v) / total_volume, 4))
+
+
+def detect_crossover(
+    series_a: list[float],
+    series_b: list[float],
+) -> Optional[str]:
+    """Detect if series_a crossed series_b in the most recent candle.
+
+    Used for: MACD line vs signal line, price vs SMA, EMA crossovers.
+
+    Args:
+        series_a: First series (e.g. MACD line) — at least 2 values, oldest first.
+        series_b: Second series (e.g. signal line) — same length.
+
+    Returns:
+        'bullish'  — series_a crossed above series_b (last candle)
+        'bearish'  — series_a crossed below series_b (last candle)
+        None       — no crossover or insufficient data
+    """
+    if len(series_a) < 2 or len(series_b) < 2:
+        return None
+
+    prev_diff = series_a[-2] - series_b[-2]
+    curr_diff = series_a[-1] - series_b[-1]
+
+    if prev_diff <= 0 and curr_diff > 0:
+        return "bullish"
+    if prev_diff >= 0 and curr_diff < 0:
+        return "bearish"
+    return None
+
+
 def _ema_series(prices: np.ndarray, period: int) -> Optional[np.ndarray]:
     """Compute a full EMA series (internal helper).
 

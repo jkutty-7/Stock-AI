@@ -9,11 +9,14 @@ import logging
 from datetime import datetime
 
 from src.config import settings
-from src.models.analysis import AlertMessage, AnalysisResult
+from src.models.analysis import ActionType, AlertMessage, AnalysisResult
 from src.models.holdings import EnrichedHolding, Holding, PortfolioSnapshot, Position
 from src.services.ai_engine import ai_engine
 from src.services.database import db
+from src.services.drawdown_breaker import drawdown_breaker
 from src.services.groww_service import groww_service
+from src.services.outcome_tracker import outcome_tracker
+from src.services.regime_classifier import regime_classifier
 from src.services.telegram_bot import telegram_service
 
 logger = logging.getLogger(__name__)
@@ -21,6 +24,47 @@ logger = logging.getLogger(__name__)
 
 class PortfolioMonitor:
     """Orchestrates the full monitoring cycle."""
+
+    async def _get_all_holdings(self) -> list[Holding]:
+        """Fetch all holdings including both settled stocks and CNC positions.
+
+        Returns:
+            Combined list of holdings from:
+            - Holdings API (settled stocks)
+            - CNC positions from Positions API (delivery stocks pending T+2 settlement)
+        """
+        # Get regular holdings
+        holdings = await groww_service.get_holdings()
+
+        # Get CNC positions (delivery positions not yet settled)
+        try:
+            positions = await groww_service.get_positions(segment="CASH")
+            # Convert CNC positions to Holding objects
+            for pos in positions:
+                if pos.product == "CNC" and pos.quantity > 0:
+                    # Create a pseudo-Holding from the position
+                    holding = Holding(
+                        isin=pos.symbol_isin,
+                        trading_symbol=pos.trading_symbol,
+                        quantity=pos.quantity,
+                        average_price=pos.net_price,
+                        pledge_quantity=0,
+                        demat_locked_quantity=0,
+                        groww_locked_quantity=0,
+                        repledge_quantity=0,
+                        t1_quantity=0,
+                        demat_free_quantity=pos.quantity,
+                        corporate_action_additional_quantity=0,
+                        active_demat_transfer_quantity=0,
+                    )
+                    # Only add if not already in holdings (avoid duplicates)
+                    if not any(h.trading_symbol == holding.trading_symbol for h in holdings):
+                        holdings.append(holding)
+                        logger.debug(f"Added CNC position as holding: {holding.trading_symbol}")
+        except Exception as e:
+            logger.warning(f"Could not fetch CNC positions: {e}")
+
+        return holdings
 
     async def run_monitoring_cycle(self) -> None:
         """Main 15-minute monitoring cycle.
@@ -31,8 +75,8 @@ class PortfolioMonitor:
         logger.info("Starting monitoring cycle")
 
         try:
-            # Step 1: Fetch current holdings
-            holdings = await groww_service.get_holdings()
+            # Step 1: Fetch current holdings (including CNC positions)
+            holdings = await self._get_all_holdings()
             if not holdings:
                 logger.warning("No holdings found — skipping monitoring cycle")
                 return
@@ -49,19 +93,54 @@ class PortfolioMonitor:
             snapshot = self._build_snapshot(enriched)
             await db.save_snapshot(snapshot)
 
+            # Step 4a: Update peak & check drawdown breaker (Feature 3)
+            await drawdown_breaker.update_peak(snapshot.current_value, snapshot.total_invested)
+            drawdown_status = await drawdown_breaker.check_drawdown(snapshot.current_value)
+
+            # Step 4b: Load current market regime (Feature 4)
+            current_regime = await regime_classifier.get_current_regime()
+
             # Step 5: Check threshold-based alerts
             alerts = self._check_thresholds(enriched, snapshot)
 
-            # Step 6: Run AI alert check
+            # Step 6: Run AI alert check (with drawdown status for Feature 3)
             try:
                 analysis = await ai_engine.check_alerts(
-                    snapshot.model_dump(mode="json")
+                    snapshot.model_dump(mode="json"),
+                    drawdown_status=drawdown_status,
+                    regime=current_regime
                 )
                 await db.save_analysis(analysis)
 
                 # Step 7: Generate alerts for high-confidence AI signals
                 for signal in analysis.signals:
-                    if signal.confidence >= 0.7:
+                    # Base threshold
+                    min_confidence = 0.7
+
+                    # Feature 4: Adjust threshold based on market regime
+                    if current_regime and settings.regime_classification_enabled:
+                        regime_min_conf = current_regime.get("suggested_min_confidence", 0.7)
+                        min_confidence = max(min_confidence, regime_min_conf)
+
+                    if signal.confidence >= min_confidence:
+                        # Feature 3: Block BUY signals if drawdown breaker is triggered
+                        if signal.action in [ActionType.BUY, ActionType.STRONG_BUY]:
+                            if drawdown_status["breaker_triggered"]:
+                                logger.warning(
+                                    f"Drawdown breaker BLOCKED BUY signal for {signal.trading_symbol} "
+                                    f"(confidence: {signal.confidence:.2f}, drawdown: {drawdown_status['drawdown_pct']:.2f}%)"
+                                )
+                                continue  # Skip this signal
+                    else:
+                        # Signal filtered by regime threshold
+                        if current_regime:
+                            logger.info(
+                                f"Regime filter BLOCKED {signal.action.value} signal for {signal.trading_symbol} "
+                                f"(confidence: {signal.confidence:.2f}, regime min: {min_confidence:.2f}, "
+                                f"regime: {current_regime.get('regime', 'UNKNOWN')})"
+                            )
+                        continue  # Skip low-confidence signal
+
                         alert = AlertMessage(
                             timestamp=datetime.now(),
                             alert_type="AI_SIGNAL",
@@ -72,7 +151,17 @@ class PortfolioMonitor:
                             signal=signal,
                         )
                         alerts.append(alert)
-                        await db.save_signal(signal.model_dump(mode="json"))
+                        signal_id = await db.save_signal(signal.model_dump(mode="json"))
+
+                        # Track outcome for signal validation (Feature 1)
+                        try:
+                            await outcome_tracker.track_new_signal(
+                                signal_id=signal_id,
+                                signal=signal,
+                                entry_price=signal.current_price,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to track outcome for signal {signal_id}: {e}")
 
             except Exception as e:
                 logger.error(f"AI analysis failed (non-fatal): {e}")
@@ -105,13 +194,21 @@ class PortfolioMonitor:
         """
         logger.info("Running full portfolio analysis")
 
-        # Fetch and enrich holdings
-        holdings = await groww_service.get_holdings()
+        # Fetch and enrich holdings (including CNC positions)
+        holdings = await self._get_all_holdings()
         symbols = [h.trading_symbol for h in holdings]
         prices = await groww_service.get_bulk_ltp(symbols)
         ohlc = await groww_service.get_bulk_ohlc(symbols)
         enriched = self._enrich_holdings(holdings, prices, ohlc)
         snapshot = self._build_snapshot(enriched)
+
+        # Build micro-signal context for Claude (Phase 2)
+        try:
+            from src.services.micro_monitor import micro_monitor
+            symbols_for_micro = [h.trading_symbol for h in enriched]
+            micro_context = micro_monitor.get_all_context(symbols_for_micro)
+        except Exception:
+            micro_context = ""
 
         # Build context for AI
         context = {
@@ -120,6 +217,7 @@ class PortfolioMonitor:
             "total_pnl": snapshot.total_pnl,
             "total_pnl_pct": snapshot.total_pnl_pct,
             "day_pnl": snapshot.day_pnl,
+            "micro_context": micro_context,
             "holdings_summary": [
                 {
                     "symbol": h.trading_symbol,
@@ -152,12 +250,16 @@ class PortfolioMonitor:
         """Merge holdings with live price data to compute P&L."""
         enriched = []
         for h in holdings:
-            # Try different key formats that Groww might return
-            price_key = f"NSE_{h.trading_symbol}"
-            current_price = prices.get(price_key, 0)
-
-            ohlc_data = ohlc.get(price_key, {})
-            prev_close = ohlc_data.get("close", current_price)
+            # Bug fix #6: use helper that tries NSE_ then BSE_ prefix
+            current_price = groww_service.find_price(prices, h.trading_symbol)
+            ohlc_data = groww_service.find_ohlc(ohlc, h.trading_symbol)
+            # Bug fix #4: proper fallback chain for prev_close
+            prev_close = float(
+                ohlc_data.get("close")
+                or ohlc_data.get("previous_close")
+                or current_price
+                or 0
+            )
 
             total_invested = h.quantity * h.average_price
             current_value = h.quantity * current_price

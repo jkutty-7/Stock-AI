@@ -1,18 +1,32 @@
 """Telegram bot service for interactive commands and push notifications.
 
-Commands:
-    /start    - Welcome message
-    /status   - Quick portfolio P&L summary
-    /portfolio - Detailed per-stock breakdown
-    /analyze <SYMBOL> - AI analysis for a specific stock
-    /alerts   - Recent alert history
-    /settings - View/modify alert settings
-    /help     - List all commands
+V2 improvements:
+- Bug fix #7: /analyze help text uses proper HTML escape (&lt;SYMBOL&gt;)
+- Per-user rate limiting: max 10 free-text messages per 5 minutes
+- Alert cooldown: suppress duplicate symbol alerts within ALERT_COOLDOWN_SECONDS
+- New commands: /live, /signals, /watchlist, /screen, /opportunity
+- format_micro_alert used for Phase 2 micro-alerts
 
-Free-text messages are forwarded to the AI engine for portfolio Q&A.
+Commands:
+    /start      - Welcome message
+    /status     - Quick portfolio P&L summary
+    /portfolio  - Detailed per-stock breakdown
+    /analyze    - AI analysis for a specific stock
+    /alerts     - Recent alert history
+    /signals    - Active trade signals
+    /live       - Current 10-sec tick state (Phase 2)
+    /screen     - On-demand screener (Phase 3)
+    /opportunity- Latest screener results (Phase 3)
+    /watchlist  - View/manage personal watchlist
+    /settings   - View current settings
+    /help       - List all commands
 """
 
 import logging
+import time
+from collections import defaultdict
+from datetime import datetime
+from typing import Optional
 
 from telegram import BotCommand, Update
 from telegram.ext import (
@@ -32,7 +46,10 @@ from src.utils.formatters import (
     format_alert_message,
     format_analysis_result,
     format_holding_detail,
+    format_micro_alert,
     format_portfolio_summary,
+    format_screener_results,
+    format_signal_list,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +58,16 @@ logger = logging.getLogger(__name__)
 class TelegramBotService:
     """Telegram bot with command handlers and push notification support."""
 
-    app: Application | None = None
+    app: Optional[Application] = None
+
+    def __init__(self) -> None:
+        # Rate limiting: user_id -> list of message timestamps
+        self._msg_timestamps: dict[int, list[float]] = defaultdict(list)
+        self._rate_limit_window = 300  # 5 minutes
+        self._rate_limit_max = 10  # max free-text messages per window
+
+        # Alert cooldown: symbol -> last alert timestamp
+        self._last_alert_time: dict[str, float] = {}
 
     async def initialize(self) -> None:
         """Build the Telegram bot application and register handlers."""
@@ -53,30 +79,35 @@ class TelegramBotService:
         self.app.add_handler(CommandHandler("portfolio", self._cmd_portfolio))
         self.app.add_handler(CommandHandler("analyze", self._cmd_analyze))
         self.app.add_handler(CommandHandler("alerts", self._cmd_alerts))
+        self.app.add_handler(CommandHandler("signals", self._cmd_signals))
+        self.app.add_handler(CommandHandler("live", self._cmd_live))
+        self.app.add_handler(CommandHandler("screen", self._cmd_screen))
+        self.app.add_handler(CommandHandler("opportunity", self._cmd_opportunity))
+        self.app.add_handler(CommandHandler("watchlist", self._cmd_watchlist))
         self.app.add_handler(CommandHandler("settings", self._cmd_settings))
         self.app.add_handler(CommandHandler("help", self._cmd_help))
 
-        # Free-text handler for AI Q&A
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
         )
 
-        # Set bot command menu
-        await self.app.bot.set_my_commands(
-            [
-                BotCommand("status", "Quick portfolio status"),
-                BotCommand("portfolio", "Detailed portfolio view"),
-                BotCommand("analyze", "AI analysis: /analyze RELIANCE"),
-                BotCommand("alerts", "Recent alerts"),
-                BotCommand("settings", "View/modify settings"),
-                BotCommand("help", "Show available commands"),
-            ]
-        )
-
+        await self.app.bot.set_my_commands([
+            BotCommand("status", "Quick portfolio status"),
+            BotCommand("portfolio", "Detailed portfolio view"),
+            BotCommand("analyze", "AI analysis: /analyze RELIANCE"),
+            BotCommand("alerts", "Recent alerts"),
+            BotCommand("signals", "Active trade signals"),
+            BotCommand("live", "Live 10-sec price ticks"),
+            BotCommand("screen", "Run stock screener"),
+            BotCommand("opportunity", "Latest screener results"),
+            BotCommand("watchlist", "Manage watchlist"),
+            BotCommand("settings", "View/modify settings"),
+            BotCommand("help", "Show all commands"),
+        ])
         logger.info("Telegram bot initialized with command handlers")
 
     async def start(self) -> None:
-        """Start the bot in webhook or polling mode depending on config."""
+        """Start the bot in webhook or polling mode."""
         if not self.app:
             raise RuntimeError("Bot not initialized. Call initialize() first.")
         await self.app.initialize()
@@ -84,10 +115,7 @@ class TelegramBotService:
 
         if settings.telegram_webhook_url:
             webhook_url = settings.telegram_webhook_url.rstrip("/") + "/webhook"
-            await self.app.bot.set_webhook(
-                url=webhook_url,
-                drop_pending_updates=True,
-            )
+            await self.app.bot.set_webhook(url=webhook_url, drop_pending_updates=True)
             logger.info(f"Telegram bot webhook set: {webhook_url}")
         else:
             await self.app.bot.delete_webhook(drop_pending_updates=True)
@@ -112,15 +140,34 @@ class TelegramBotService:
             logger.info("Telegram bot stopped")
 
     # ----------------------------------------------------------------
-    # Push Notifications (called by portfolio_monitor)
+    # Push Notifications
     # ----------------------------------------------------------------
 
     async def send_alert(self, alert: AlertMessage) -> None:
-        """Send an alert to the configured Telegram chat."""
+        """Send an alert with cooldown deduplication."""
         if not self.app:
-            logger.warning("Telegram bot not initialized — cannot send alert")
             return
+
+        # Cooldown check: suppress repeated alerts for the same symbol
+        if alert.trading_symbol:
+            last = self._last_alert_time.get(alert.trading_symbol, 0)
+            if time.monotonic() - last < settings.alert_cooldown_seconds:
+                logger.debug(f"Alert suppressed (cooldown): {alert.trading_symbol}")
+                return
+            self._last_alert_time[alert.trading_symbol] = time.monotonic()
+
         text = format_alert_message(alert)
+        await self.app.bot.send_message(
+            chat_id=settings.telegram_chat_id,
+            text=text,
+            parse_mode="HTML",
+        )
+
+    async def send_micro_alert(self, signal: dict) -> None:
+        """Send a micro-signal (10-sec tick) alert."""
+        if not self.app:
+            return
+        text = format_micro_alert(signal)
         await self.app.bot.send_message(
             chat_id=settings.telegram_chat_id,
             text=text,
@@ -138,7 +185,7 @@ class TelegramBotService:
         )
 
     async def send_message(self, text: str, parse_mode: str = "HTML") -> None:
-        """Send a generic message to the configured chat."""
+        """Send a generic message, splitting if needed."""
         if not self.app:
             return
         for chunk in self._split_message(text):
@@ -152,48 +199,35 @@ class TelegramBotService:
     # Command Handlers
     # ----------------------------------------------------------------
 
-    async def _cmd_start(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Handle /start command."""
+    async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
-            "<b>Stock AI Portfolio Monitor</b>\n\n"
-            "I monitor your Groww portfolio and provide AI-powered analysis.\n\n"
-            "Use /help to see all available commands.",
+            "<b>Stock AI Portfolio Monitor v2</b>\n\n"
+            "I monitor your Groww portfolio with 10-second live price tracking\n"
+            "and Claude AI analysis every 15 minutes.\n\n"
+            "Use /help to see all commands.",
             parse_mode="HTML",
         )
 
-    async def _cmd_status(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Handle /status — quick portfolio P&L summary."""
+    async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         snapshot = await db.get_latest_snapshot()
         if not snapshot:
-            await update.message.reply_text(
-                "No portfolio data yet. Monitoring will start shortly."
-            )
+            await update.message.reply_text("No portfolio data yet. Monitoring starts shortly.")
             return
         text = format_portfolio_summary(snapshot)
         await update.message.reply_text(text, parse_mode="HTML")
 
-    async def _cmd_portfolio(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Handle /portfolio — detailed per-stock breakdown."""
+    async def _cmd_portfolio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         snapshot = await db.get_latest_snapshot()
         if not snapshot:
             await update.message.reply_text("No portfolio data available.")
             return
-        messages = format_holding_detail(snapshot)
-        for msg in messages:
+        for msg in format_holding_detail(snapshot):
             await update.message.reply_text(msg, parse_mode="HTML")
 
-    async def _cmd_analyze(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Handle /analyze <SYMBOL> — AI analysis for a specific stock."""
+    async def _cmd_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         args = context.args
         if not args:
+            # Bug fix #7: use HTML-escaped symbol placeholder correctly
             await update.message.reply_text(
                 "Usage: /analyze &lt;SYMBOL&gt;\nExample: /analyze RELIANCE",
                 parse_mode="HTML",
@@ -201,8 +235,7 @@ class TelegramBotService:
             return
 
         symbol = args[0].upper()
-        await update.message.reply_text(f"Analyzing {symbol}... This may take a moment.")
-
+        await update.message.reply_text(f"Analyzing {symbol}… This may take a moment.")
         try:
             analysis = await ai_engine.analyze_stock(symbol)
             await db.save_analysis(analysis)
@@ -213,33 +246,129 @@ class TelegramBotService:
             logger.error(f"Analysis failed for {symbol}: {e}")
             await update.message.reply_text(f"Analysis failed: {str(e)[:300]}")
 
-    async def _cmd_alerts(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Handle /alerts — show recent alerts."""
+    async def _cmd_alerts(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         alerts = await db.get_recent_alerts(limit=10)
         if not alerts:
             await update.message.reply_text("No recent alerts.")
             return
-
         parts = ["<b>Recent Alerts</b>\n"]
         for a in alerts:
             severity = a.get("severity", "INFO")
             title = a.get("title", "Unknown")
-            timestamp = a.get("timestamp", "")
-            parts.append(f"[{severity}] {title}")
-            parts.append(f"  <i>{timestamp}</i>\n")
+            ts = str(a.get("timestamp", ""))[:16]
+            parts.append(f"[{severity}] {title}\n  <i>{ts}</i>\n")
+        for chunk in self._split_message("\n".join(parts)):
+            await update.message.reply_text(chunk, parse_mode="HTML")
 
-        text = "\n".join(parts)
+    async def _cmd_signals(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show active trade signals."""
+        signals = await db.get_active_signals()
+        text = format_signal_list(signals)
         for chunk in self._split_message(text):
             await update.message.reply_text(chunk, parse_mode="HTML")
 
-    async def _cmd_settings(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Handle /settings — view current settings."""
-        user_settings = await db.get_user_settings()
+    async def _cmd_live(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show current 10-second tick state for all holdings (Phase 2)."""
+        try:
+            from src.services.micro_monitor import micro_monitor
+            status = micro_monitor.get_live_status()
+            if not status:
+                await update.message.reply_text(
+                    "No live tick data yet. Starts when market opens."
+                )
+                return
+            parts = ["<b>⚡ Live Price Ticks</b>\n"]
+            for symbol, info in status.items():
+                dir_icon = "↗" if info["direction"] == "UP" else "↘" if info["direction"] == "DOWN" else "→"
+                parts.append(
+                    f"{dir_icon} <b>{symbol}</b>: ₹{info['price']:,.2f} "
+                    f"({info['momentum_1m']:+.2f}% 1m | {info['consecutive']} ticks)"
+                )
+            await update.message.reply_text("\n".join(parts), parse_mode="HTML")
+        except ImportError:
+            await update.message.reply_text("Live monitoring (Phase 2) not yet active.")
 
+    async def _cmd_screen(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Run on-demand stock screener (Phase 3)."""
+        await update.message.reply_text("Running screener… This may take 1-2 minutes.")
+        try:
+            from src.services.screener import screener_engine
+            from src.services.ai_engine import ai_engine as _ai
+            candidates = await screener_engine.run_full_screen()
+            top = candidates[:settings.screener_top_n]
+            if not top:
+                await update.message.reply_text("No candidates found in this screen.")
+                return
+            analysis = await _ai.analyze_screener_candidates([c.to_dict() for c in top])
+            result_doc = {
+                "timestamp": datetime.now(),
+                "candidates": [c.to_dict() for c in top],
+                "claude_analysis": analysis.model_dump(mode="json"),
+            }
+            await db.save_screener_result(result_doc)
+            text = format_screener_results(result_doc)
+            for chunk in self._split_message(text):
+                await update.message.reply_text(chunk, parse_mode="HTML")
+        except ImportError:
+            await update.message.reply_text("Screener (Phase 3) not yet active.")
+        except Exception as e:
+            logger.error(f"Screener failed: {e}")
+            await update.message.reply_text(f"Screener failed: {str(e)[:300]}")
+
+    async def _cmd_opportunity(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show latest screener results from DB."""
+        result = await db.get_latest_screener_result()
+        if not result:
+            await update.message.reply_text("No screener results yet. Use /screen to run one.")
+            return
+        text = format_screener_results(result)
+        for chunk in self._split_message(text):
+            await update.message.reply_text(chunk, parse_mode="HTML")
+
+    async def _cmd_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """View/add/remove symbols from the personal watchlist."""
+        args = context.args
+        user_settings = await db.get_user_settings()
+        watchlist: list[str] = user_settings.get("watchlist", [])
+
+        if not args:
+            if watchlist:
+                await update.message.reply_text(
+                    f"<b>Watchlist:</b>\n{', '.join(watchlist)}\n\n"
+                    f"Use /watchlist add SYMBOL or /watchlist remove SYMBOL",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    "Watchlist is empty.\nUse /watchlist add SYMBOL to add stocks."
+                )
+            return
+
+        action_arg = args[0].lower()
+        if len(args) < 2:
+            await update.message.reply_text("Usage: /watchlist add|remove SYMBOL")
+            return
+
+        symbol = args[1].upper()
+        if action_arg == "add":
+            if symbol not in watchlist:
+                watchlist.append(symbol)
+                await db.update_user_settings({"watchlist": watchlist})
+                await update.message.reply_text(f"{symbol} added to watchlist.")
+            else:
+                await update.message.reply_text(f"{symbol} is already in watchlist.")
+        elif action_arg == "remove":
+            if symbol in watchlist:
+                watchlist.remove(symbol)
+                await db.update_user_settings({"watchlist": watchlist})
+                await update.message.reply_text(f"{symbol} removed from watchlist.")
+            else:
+                await update.message.reply_text(f"{symbol} not found in watchlist.")
+        else:
+            await update.message.reply_text("Usage: /watchlist add|remove SYMBOL")
+
+    async def _cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_settings = await db.get_user_settings()
         text = (
             "<b>Settings</b>\n\n"
             f"Monitoring: {'ON' if user_settings.get('monitoring_enabled') else 'OFF'}\n"
@@ -252,29 +381,46 @@ class TelegramBotService:
         )
         await update.message.reply_text(text, parse_mode="HTML")
 
-    async def _cmd_help(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        """Handle /help — list all commands."""
+    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "<b>Available Commands</b>\n\n"
-            "/status - Quick portfolio P&amp;L summary\n"
-            "/portfolio - Detailed holdings view\n"
-            "/analyze &lt;SYMBOL&gt; - AI analysis for a stock\n"
-            "/alerts - Recent alerts\n"
-            "/settings - View/modify settings\n"
-            "/help - Show this message\n\n"
-            "You can also type any question about your portfolio\n"
-            "or the market, and I'll analyze it using AI.",
+            "/status — Quick portfolio P&amp;L summary\n"
+            "/portfolio — Detailed holdings view\n"
+            "/analyze &lt;SYMBOL&gt; — AI analysis for a stock\n"
+            "/alerts — Recent alerts\n"
+            "/signals — Active trade signals\n"
+            "/live — Real-time 10-sec tick prices\n"
+            "/screen — Run stock screener (top opportunities)\n"
+            "/opportunity — Latest screener results\n"
+            "/watchlist — View/add/remove watchlist symbols\n"
+            "/settings — View current settings\n"
+            "/help — Show this message\n\n"
+            "You can also type any question about your portfolio or the market.",
             parse_mode="HTML",
         )
 
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Handle free-text messages as AI questions about the portfolio."""
+        """Handle free-text messages with per-user rate limiting."""
+        user_id = update.effective_user.id if update.effective_user else 0
+        now = time.monotonic()
+
+        # Clean old timestamps outside the window
+        self._msg_timestamps[user_id] = [
+            t for t in self._msg_timestamps[user_id]
+            if now - t < self._rate_limit_window
+        ]
+
+        if len(self._msg_timestamps[user_id]) >= self._rate_limit_max:
+            await update.message.reply_text(
+                f"Rate limit: max {self._rate_limit_max} questions per 5 minutes."
+            )
+            return
+
+        self._msg_timestamps[user_id].append(now)
         user_text = update.message.text
-        await update.message.reply_text("Thinking...")
+        await update.message.reply_text("Thinking…")
 
         try:
             analysis = await ai_engine.answer_question(user_text)
@@ -291,22 +437,19 @@ class TelegramBotService:
     # ----------------------------------------------------------------
 
     def _split_message(self, text: str, max_length: int = 4096) -> list[str]:
-        """Split long messages to respect Telegram's character limit."""
+        """Split long messages to respect Telegram's 4096 char limit."""
         if len(text) <= max_length:
             return [text]
-
         chunks: list[str] = []
         while text:
             if len(text) <= max_length:
                 chunks.append(text)
                 break
-            # Try to split at a newline
             split_point = text.rfind("\n", 0, max_length)
             if split_point == -1:
                 split_point = max_length
             chunks.append(text[:split_point])
             text = text[split_point:].lstrip()
-
         return chunks
 
 

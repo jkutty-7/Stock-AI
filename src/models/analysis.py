@@ -15,6 +15,7 @@ class ActionType(str, Enum):
     HOLD = "HOLD"
     STRONG_BUY = "STRONG_BUY"
     STRONG_SELL = "STRONG_SELL"
+    WATCH = "WATCH"
 
 
 class AnalysisType(str, Enum):
@@ -24,6 +25,7 @@ class AnalysisType(str, Enum):
     STOCK_ANALYSIS = "stock_analysis"
     MARKET_OVERVIEW = "market_overview"
     ALERT_CHECK = "alert_check"
+    SCREENER = "screener"
 
 
 class TradeSignal(BaseModel):
@@ -36,6 +38,12 @@ class TradeSignal(BaseModel):
     stop_loss: Optional[float] = None
     reasoning: str
     risk_level: str = "MEDIUM"  # LOW, MEDIUM, HIGH
+    # V2 additions
+    risk_reward_ratio: Optional[float] = None
+    reasoning_tags: list[str] = Field(default_factory=list)
+    time_horizon: Optional[str] = None  # intraday | swing_3-5d | positional_2-4w
+    micro_signal_context: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
 
 class AnalysisResult(BaseModel):
