@@ -36,6 +36,10 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         daily_regime_classification_job,
         daily_screener_job,
         health_check_job,
+        intraday_daily_report_job,
+        intraday_hard_exit_job,
+        intraday_orb_setup_job,
+        intraday_premarket_scan_job,
         market_close_job,
         market_open_job,
         monitoring_job,
@@ -161,3 +165,56 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         replace_existing=True,
         max_instances=1,
     )
+
+    # 10. Intraday pre-market scan at 8:55 AM
+    if settings.intraday_enabled:
+        scheduler.add_job(
+            intraday_premarket_scan_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri", hour=8, minute=55, timezone=IST
+            ),
+            id="intraday_premarket_scan",
+            name="Intraday Pre-Market Scan",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # 11. ORB setup at 9:31 AM (after first 15-min candle)
+        scheduler.add_job(
+            intraday_orb_setup_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri", hour=9, minute=31, timezone=IST
+            ),
+            id="intraday_orb_setup",
+            name="Intraday ORB Setup",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # 12. Hard exit alert at 3:15 PM
+        scheduler.add_job(
+            intraday_hard_exit_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri",
+                hour=settings.intraday_hard_exit_hour,
+                minute=settings.intraday_hard_exit_minute,
+                timezone=IST,
+            ),
+            id="intraday_hard_exit",
+            name="Intraday Hard Exit Alert",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # 13. Daily intraday P&L report at 3:35 PM
+        scheduler.add_job(
+            intraday_daily_report_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri", hour=15, minute=35, timezone=IST
+            ),
+            id="intraday_daily_report",
+            name="Intraday Daily P&L Report",
+            replace_existing=True,
+            max_instances=1,
+        )
+

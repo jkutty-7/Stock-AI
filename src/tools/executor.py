@@ -256,6 +256,127 @@ async def execute_tool(tool_name: str, tool_input: dict[str, Any]) -> dict | str
                 logger.error(f"Error fetching signal performance: {e}", exc_info=True)
                 return {"error": f"Signal performance data unavailable: {e}"}
 
+
+        case "get_intraday_indicators":
+            symbol = tool_input["trading_symbol"]
+            try:
+                from datetime import timedelta
+                from src.utils.intraday_indicators import (
+                    compute_vwap_bands, get_supertrend_signal, compute_cpr
+                )
+                from src.config import settings as _s
+
+                # 5-min candles for today
+                today_start = (datetime.now().replace(hour=0, minute=0, second=0)).strftime("%Y-%m-%d %H:%M:%S")
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                candles_5m = await groww_service.get_historical_candles(
+                    trading_symbol=symbol, exchange="NSE", segment="CASH",
+                    start_time=today_start, end_time=now_str, interval_minutes=5,
+                )
+
+                # Daily candles for CPR (need yesterday's H/L/C)
+                daily_start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+                candles_daily = await groww_service.get_historical_candles(
+                    trading_symbol=symbol, exchange="NSE", segment="CASH",
+                    start_time=daily_start, end_time=now_str, interval_minutes=1440,
+                )
+
+                vwap_data = compute_vwap_bands(candles_5m) if candles_5m else {}
+                st_signal = get_supertrend_signal(candles_5m, _s.intraday_supertrend_period, _s.intraday_supertrend_multiplier) if candles_5m else {"direction": "UNKNOWN"}
+
+                cpr_data = {}
+                if candles_daily and len(candles_daily) >= 2:
+                    prev = candles_daily[-2]
+                    cpr_data = compute_cpr(prev.high, prev.low, prev.close)
+
+                quote = await groww_service.get_quote(symbol)
+                return {
+                    "symbol": symbol,
+                    "current_price": quote.last_price,
+                    "supertrend": st_signal,
+                    "vwap": vwap_data,
+                    "cpr": cpr_data,
+                    "candles_5m_count": len(candles_5m) if candles_5m else 0,
+                }
+            except Exception as e:
+                return {"error": f"Intraday indicators unavailable for {symbol}: {e}"}
+
+        case "get_opening_range":
+            symbol = tool_input["trading_symbol"]
+            try:
+                from src.services.intraday_monitor import intraday_monitor
+                orb = intraday_monitor._orb_data.get(symbol)
+                if not orb:
+                    # Try to load from DB
+                    from src.utils.market_hours import now_ist
+                    today = now_ist().date()
+                    doc = await db.intraday_orb_data.find_one({"symbol": symbol, "date": today.isoformat()})
+                    if doc:
+                        from src.models.intraday import IntradayORBData
+                        from datetime import date
+                        doc.pop("_id", None)
+                        doc["date"] = date.fromisoformat(doc["date"])
+                        orb = IntradayORBData(**doc)
+
+                if not orb:
+                    return {"error": f"ORB data not yet computed for {symbol}. ORB is set up at 9:31 AM."}
+
+                from src.utils.intraday_indicators import check_orb_breakout
+                quote = await groww_service.get_quote(symbol)
+                breakout = check_orb_breakout(quote.last_price, orb)
+                return {
+                    "symbol": symbol,
+                    "orb_high": orb.orb_high,
+                    "orb_low": orb.orb_low,
+                    "orb_range_pct": orb.orb_range_pct,
+                    "volume_first15": orb.volume_first15,
+                    "current_price": quote.last_price,
+                    "breakout_direction": breakout["direction"],
+                    "breakout_strength_pct": breakout["strength_pct"],
+                    "breakout_confirmed": breakout["breakout"],
+                }
+            except Exception as e:
+                return {"error": f"Opening range unavailable for {symbol}: {e}"}
+
+        case "get_gap_analysis":
+            symbol = tool_input["trading_symbol"]
+            try:
+                from datetime import timedelta
+                daily_start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                candles = await groww_service.get_historical_candles(
+                    trading_symbol=symbol, exchange="NSE", segment="CASH",
+                    start_time=daily_start, end_time=now_str, interval_minutes=1440,
+                )
+                if not candles or len(candles) < 2:
+                    return {"error": f"Insufficient daily data for gap analysis of {symbol}"}
+
+                prev_close = candles[-2].close
+                today_open = candles[-1].open
+                current_quote = await groww_service.get_quote(symbol)
+                current_price = current_quote.last_price
+
+                gap_pct = (today_open - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
+                gap_type = "GAP_UP" if gap_pct >= 0.5 else "GAP_DOWN" if gap_pct <= -0.5 else "FLAT"
+                gap_fill_price = prev_close  # gap fills when price returns to prev close
+                gap_filled = (
+                    (gap_pct > 0 and current_price <= prev_close) or
+                    (gap_pct < 0 and current_price >= prev_close)
+                )
+                return {
+                    "symbol": symbol,
+                    "prev_close": round(prev_close, 2),
+                    "today_open": round(today_open, 2),
+                    "current_price": round(current_price, 2),
+                    "gap_pct": round(gap_pct, 3),
+                    "gap_type": gap_type,
+                    "gap_fill_price": round(gap_fill_price, 2),
+                    "gap_filled": gap_filled,
+                    "gap_from_current_pct": round((current_price - prev_close) / prev_close * 100, 3),
+                }
+            except Exception as e:
+                return {"error": f"Gap analysis unavailable for {symbol}: {e}"}
+
         case _:
             logger.warning(f"Unknown tool called: {tool_name}")
             return f"Unknown tool: {tool_name}"

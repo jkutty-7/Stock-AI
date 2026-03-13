@@ -86,6 +86,25 @@ class Settings(BaseSettings):
     regime_classification_enabled: bool = Field(default=True, description="Enable daily market regime classification")
     regime_index_symbol: str = Field(default="NIFTY 50", description="Index symbol for regime classification")
 
+
+    # --- Intraday Trading ---
+    intraday_enabled: bool = Field(default=True, description="Enable intraday trading module")
+    intraday_poll_interval_seconds: int = Field(default=60, description="Intraday monitor polling interval (seconds)")
+    intraday_max_positions: int = Field(default=3, description="Max concurrent intraday (MIS) positions")
+    intraday_risk_per_trade_rs: float = Field(default=500.0, description="Rs. to risk per intraday trade")
+    intraday_max_daily_loss_rs: float = Field(default=1500.0, description="Daily intraday loss limit (triggers breaker)")
+    intraday_max_position_value: float = Field(default=50000.0, description="Hard cap on total value per intraday position")
+    intraday_no_entry_after_hour: int = Field(default=14, description="No new entries after this hour (14 = 2 PM)")
+    intraday_no_entry_after_minute: int = Field(default=30, description="No new entries after this minute")
+    intraday_hard_exit_hour: int = Field(default=15, description="Hard exit alert hour")
+    intraday_hard_exit_minute: int = Field(default=15, description="Hard exit alert minute (15 = 3:15 PM)")
+    intraday_orb_minutes: int = Field(default=15, description="Opening range duration in minutes")
+    intraday_supertrend_period: int = Field(default=10, description="Supertrend ATR period")
+    intraday_supertrend_multiplier: float = Field(default=3.0, description="Supertrend ATR multiplier")
+    intraday_min_gap_pct: float = Field(default=0.5, description="Minimum gap% to include in pre-market watchlist")
+    intraday_watchlist_size: int = Field(default=20, description="Max symbols in daily intraday watchlist")
+    intraday_min_breakout_confirm_ticks: int = Field(default=3, description="Min MicroMonitor consecutive ticks to confirm intraday breakout")
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

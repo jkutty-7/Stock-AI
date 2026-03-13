@@ -279,4 +279,64 @@ TOOL_DEFINITIONS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "get_intraday_indicators",
+        "description": (
+            "Get intraday-specific technical indicators for a symbol: "
+            "Supertrend (5-min chart, period=10, multiplier=3) with current direction and flip status, "
+            "VWAP with +/-1 standard-deviation bands (computed from today's 5-min candles), "
+            "and CPR levels (pivot, Bottom Central, Top Central, R1, R2, S1, S2). "
+            "Use this as the primary tool for intraday bias assessment."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trading_symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol (e.g., 'RELIANCE', 'TCS')",
+                },
+            },
+            "required": ["trading_symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_opening_range",
+        "description": (
+            "Get Opening Range Breakout (ORB) data for a symbol. "
+            "Returns high and low of the first 15 minutes (9:15-9:29 AM IST), "
+            "current breakout direction (UP/DOWN/NONE), and breakout strength %. "
+            "An ORB breakout confirmed with volume is one of the strongest intraday setups."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trading_symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol",
+                },
+            },
+            "required": ["trading_symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_gap_analysis",
+        "description": (
+            "Get overnight gap analysis for a symbol: gap% from previous close to today's open, "
+            "gap type (GAP_UP/GAP_DOWN/FLAT), gap fill price, and whether the gap has been filled. "
+            "Gap direction often sets the intraday bias for the first half of the trading session."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trading_symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol",
+                },
+            },
+            "required": ["trading_symbol"],
+            "additionalProperties": False,
+        },
+    },
 ]

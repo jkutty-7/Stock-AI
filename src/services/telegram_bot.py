@@ -86,6 +86,13 @@ class TelegramBotService:
         self.app.add_handler(CommandHandler("watchlist", self._cmd_watchlist))
         self.app.add_handler(CommandHandler("settings", self._cmd_settings))
         self.app.add_handler(CommandHandler("help", self._cmd_help))
+        # Intraday commands
+        self.app.add_handler(CommandHandler("intraday", self._cmd_intraday))
+        self.app.add_handler(CommandHandler("itrades", self._cmd_itrades))
+        self.app.add_handler(CommandHandler("isetup", self._cmd_isetup))
+        self.app.add_handler(CommandHandler("ipnl", self._cmd_ipnl))
+        self.app.add_handler(CommandHandler("iscan", self._cmd_iscan))
+        self.app.add_handler(CommandHandler("irisk", self._cmd_irisk))
 
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
@@ -103,6 +110,12 @@ class TelegramBotService:
             BotCommand("watchlist", "Manage watchlist"),
             BotCommand("settings", "View/modify settings"),
             BotCommand("help", "Show all commands"),
+            BotCommand("intraday", "Today intraday watchlist with setups"),
+            BotCommand("itrades", "Active intraday positions + P&L"),
+            BotCommand("isetup", "Intraday setup: /isetup RELIANCE"),
+            BotCommand("ipnl", "Today intraday P&L summary"),
+            BotCommand("iscan", "Trigger on-demand intraday scan"),
+            BotCommand("irisk", "Intraday risk status"),
         ])
         logger.info("Telegram bot initialized with command handlers")
 
@@ -398,6 +411,122 @@ class TelegramBotService:
             "You can also type any question about your portfolio or the market.",
             parse_mode="HTML",
         )
+
+
+    async def _cmd_intraday(self, update, context) -> None:
+        """Show today intraday watchlist."""
+        try:
+            from src.services.intraday_scanner import intraday_scanner
+            setups = await intraday_scanner.get_today_watchlist()
+            text = intraday_scanner.format_morning_report(setups)
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"Intraday watchlist unavailable: {str(e)[:200]}")
+
+    async def _cmd_itrades(self, update, context) -> None:
+        """Show active intraday positions with live P&L."""
+        try:
+            from src.services.intraday_monitor import intraday_monitor
+            positions = intraday_monitor.get_active_positions()
+            if not positions:
+                await update.message.reply_text("No active intraday positions.")
+                return
+            lines = ["<b>Active Intraday Positions</b>\n"]
+            for p in positions:
+                pnl_sign = "+" if p["current_pnl"] >= 0 else ""
+                lines.append(
+                    f"<b>{p['symbol']}</b> ({p['direction']})\n"
+                    f"  Entry: Rs.{p['entry_price']:.2f} | Now: Rs.{p['current_price']:.2f}\n"
+                    f"  Qty: {p['quantity']} | P&L: {pnl_sign}Rs.{p['current_pnl']:.0f} ({pnl_sign}{p['current_pnl_pct']:.2f}%)\n"
+                    f"  SL: Rs.{p['stop_loss']:.2f} | Target: Rs.{p['target']:.2f}\n"
+                    f"  Trigger: {p['entry_trigger']} @ {p['entry_time']}"
+                )
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"Error: {str(e)[:200]}")
+
+    async def _cmd_isetup(self, update, context) -> None:
+        """Show detailed intraday setup for a specific stock."""
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "Usage: /isetup &lt;SYMBOL&gt;\nExample: /isetup RELIANCE", parse_mode="HTML"
+            )
+            return
+        symbol = args[0].upper()
+        await update.message.reply_text(f"Fetching intraday setup for {symbol}...")
+        try:
+            from src.tools.executor import execute_tool
+            indicators = await execute_tool("get_intraday_indicators", {"trading_symbol": symbol})
+            orb = await execute_tool("get_opening_range", {"trading_symbol": symbol})
+            gap = await execute_tool("get_gap_analysis", {"trading_symbol": symbol})
+            lines = [f"<b>Intraday Setup: {symbol}</b>\n"]
+            if isinstance(gap, dict) and not gap.get("error"):
+                lines.append(f"Gap: {gap.get('gap_pct', 0):+.2f}% ({gap.get('gap_type', '')})")
+                lines.append(f"Prev Close: Rs.{gap.get('prev_close', 0):.2f} | Open: Rs.{gap.get('today_open', 0):.2f}")
+            if isinstance(indicators, dict) and not indicators.get("error"):
+                cpr = indicators.get("cpr", {})
+                st = indicators.get("supertrend", {})
+                vwap_d = indicators.get("vwap", {})
+                if cpr:
+                    lines.append(f"\nCPR: {cpr.get('bc', 0):.1f}-{cpr.get('tc', 0):.1f} (Pivot: {cpr.get('pivot', 0):.1f})")
+                    lines.append(f"R1: {cpr.get('r1', 0):.1f} | R2: {cpr.get('r2', 0):.1f}")
+                    lines.append(f"S1: {cpr.get('s1', 0):.1f} | S2: {cpr.get('s2', 0):.1f}")
+                if st:
+                    lines.append(f"Supertrend: {st.get('direction', 'UNKNOWN')} @ Rs.{st.get('value', 0):.2f}")
+                if vwap_d:
+                    lines.append(f"VWAP: Rs.{vwap_d.get('vwap', 0):.2f} (+1SD: {vwap_d.get('upper_band', 0):.2f} | -1SD: {vwap_d.get('lower_band', 0):.2f})")
+                lines.append(f"\nCurrent: Rs.{indicators.get('current_price', 0):.2f}")
+            if isinstance(orb, dict) and not orb.get("error"):
+                lines.append(f"\nORB High: Rs.{orb.get('orb_high', 0):.2f} | ORB Low: Rs.{orb.get('orb_low', 0):.2f}")
+                lines.append(f"Breakout: {orb.get('breakout_direction', 'NONE')} ({orb.get('breakout_strength_pct', 0):.2f}%)")
+            elif isinstance(orb, dict) and orb.get("error"):
+                lines.append(f"\nORB: {orb['error']}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"Setup fetch failed: {str(e)[:300]}")
+
+    async def _cmd_ipnl(self, update, context) -> None:
+        """Show today intraday P&L summary."""
+        try:
+            from src.services.intraday_scanner import intraday_scanner
+            report = await intraday_scanner.generate_daily_report()
+            text = intraday_scanner.format_daily_report(report)
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"P&L data unavailable: {str(e)[:200]}")
+
+    async def _cmd_iscan(self, update, context) -> None:
+        """Trigger on-demand intraday scan."""
+        await update.message.reply_text("Running intraday scan...")
+        try:
+            from src.services.intraday_scanner import intraday_scanner
+            from src.services.intraday_monitor import intraday_monitor
+            setups = await intraday_scanner.run_premarket_scan()
+            await intraday_monitor.load_watchlist()
+            text = intraday_scanner.format_morning_report(setups)
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"Scan failed: {str(e)[:200]}")
+
+    async def _cmd_irisk(self, update, context) -> None:
+        """Show intraday risk status."""
+        try:
+            from src.services.intraday_monitor import intraday_monitor
+            risk = intraday_monitor.get_risk_status()
+            breaker_icon = "[BLOCKED]" if risk["breaker_triggered"] else "[OK]"
+            lines = [
+                "<b>Intraday Risk Status</b>\n",
+                f"Positions: {risk['open_positions']}/{risk['max_positions']}",
+                f"Open Risk: Rs.{risk['open_risk_rs']:.0f}",
+                f"Today P&L: Rs.{risk['daily_pnl_rs']:+.0f}",
+                f"Daily Loss Limit: Rs.{risk['daily_loss_limit_rs']:.0f}",
+                f"Remaining Budget: Rs.{risk['remaining_loss_budget_rs']:.0f}",
+                f"Breaker: {breaker_icon}",
+            ]
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"Risk status unavailable: {str(e)[:200]}")
 
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
