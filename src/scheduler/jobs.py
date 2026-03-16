@@ -281,9 +281,7 @@ async def intraday_daily_report_job() -> None:
         report = await intraday_scanner.generate_daily_report()
         text = intraday_scanner.format_daily_report(report)
         await telegram_service.send_message(
-            f"<b>Intraday EOD</b>
-
-{text}", parse_mode="HTML"
+            f"<b>Intraday EOD</b>\n\n{text}", parse_mode="HTML"
         )
 
     try:
