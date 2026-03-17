@@ -191,3 +191,72 @@ async def get_ai_usage(
 ):
     """Get Claude API token usage and cost summary for the last N days."""
     return await db.get_ai_usage_summary(days=days)
+
+
+# ----------------------------------------------------------------
+# Intraday Trading (v2.2)
+# ----------------------------------------------------------------
+
+@router.get("/intraday/watchlist")
+async def get_intraday_watchlist(
+    _=None,
+):
+    """Get today intraday watchlist from pre-market scan."""
+    try:
+        from src.services.intraday_scanner import intraday_scanner
+        setups = await intraday_scanner.get_today_watchlist()
+        return {"watchlist": [s.model_dump() for s in setups], "count": len(setups)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/intraday/positions")
+async def get_intraday_positions(
+    _=None,
+):
+    """Get active intraday positions with live P&L."""
+    try:
+        from src.services.intraday_monitor import intraday_monitor
+        return {"positions": intraday_monitor.get_active_positions()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/intraday/pnl")
+async def get_intraday_pnl(
+    _=None,
+):
+    """Get today intraday P&L report."""
+    try:
+        from src.services.intraday_scanner import intraday_scanner
+        report = await intraday_scanner.generate_daily_report()
+        return report.model_dump()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/intraday/risk")
+async def get_intraday_risk(
+    _=None,
+):
+    """Get intraday risk status."""
+    try:
+        from src.services.intraday_monitor import intraday_monitor
+        return intraday_monitor.get_risk_status()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/intraday/scan")
+async def trigger_intraday_scan(
+    _=None,
+):
+    """Trigger on-demand intraday pre-market scan."""
+    try:
+        from src.services.intraday_scanner import intraday_scanner
+        from src.services.intraday_monitor import intraday_monitor
+        setups = await intraday_scanner.run_premarket_scan()
+        await intraday_monitor.load_watchlist()
+        return {"status": "ok", "candidates_found": len(setups)}
+    except Exception as e:
+        return {"error": str(e)}

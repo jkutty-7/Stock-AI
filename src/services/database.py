@@ -69,6 +69,14 @@ class Database:
         self.screener_results = self.db["screener_results"]
         self.ai_usage_logs = self.db["ai_usage_logs"]
         self.signal_outcomes = self.db["signal_outcomes"]  # v2.1
+
+        # v2.2: Intraday trading collections
+        self.intraday_watchlist = self.db["intraday_watchlist"]
+        self.intraday_positions = self.db["intraday_positions"]
+        self.intraday_signals = self.db["intraday_signals"]
+        self.intraday_daily_pnl = self.db["intraday_daily_pnl"]
+        self.intraday_orb_data = self.db["intraday_orb_data"]
+        self.intraday_breaker_state = self.db["intraday_breaker_state"]
         self.portfolio_peaks = self.db["portfolio_peaks"]  # v2.1
         self.circuit_breaker_state = self.db["circuit_breaker_state"]  # v2.1
         self.market_regime = self.db["market_regime"]  # v2.1
@@ -138,6 +146,16 @@ class Database:
         await self._create_ttl_index(
             self.signal_outcomes, "timestamp", 365 * 86400, "outcomes_ttl"
         )
+
+        # v2.2: Intraday collection indexes
+        await self.intraday_positions.create_index([("symbol", 1), ("entry_time", -1)])
+        await self.intraday_positions.create_index([("status", 1)])
+        await self.intraday_watchlist.create_index([("scan_date", 1), ("rank_score", -1)])
+        await self.intraday_orb_data.create_index([("symbol", 1), ("date", 1)])
+        await self._create_ttl_index(self.intraday_watchlist, "scan_date", 86400, "iwatch_ttl")
+        await self._create_ttl_index(self.intraday_positions, "entry_time", 90 * 86400, "ipos_ttl")
+        await self._create_ttl_index(self.intraday_orb_data, "computed_at", 7 * 86400, "iorb_ttl")
+        await self._create_ttl_index(self.intraday_daily_pnl, "timestamp", 365 * 86400, "ipnl_ttl")
 
         # Portfolio peaks — TTL 90 days (Feature 3: Drawdown Breaker)
         await self.portfolio_peaks.create_index([("timestamp", DESCENDING)])

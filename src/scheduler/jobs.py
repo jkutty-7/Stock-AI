@@ -202,3 +202,89 @@ async def daily_screener_job() -> None:
         await _timed_job("daily_screener", _screen())
     except ImportError:
         logger.info("Screener module not yet active — skipping daily_screener_job")
+
+
+async def intraday_premarket_scan_job() -> None:
+    """Pre-market intraday scan at 8:55 AM — gap analysis and CPR levels."""
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _scan():
+        from src.config import settings
+        if not settings.intraday_enabled:
+            return
+        from src.services.intraday_scanner import intraday_scanner
+        from src.services.intraday_monitor import intraday_monitor
+        logger.info("Running intraday pre-market scan")
+        setups = await intraday_scanner.run_premarket_scan()
+        # Pre-load the watchlist into the monitor
+        await intraday_monitor.load_watchlist()
+        # Send morning report
+        text = intraday_scanner.format_morning_report(setups)
+        await telegram_service.send_message(text, parse_mode="HTML")
+
+    try:
+        await _timed_job("intraday_premarket_scan", _scan())
+    except ImportError:
+        logger.info("Intraday module not yet active — skipping premarket scan")
+
+
+async def intraday_orb_setup_job() -> None:
+    """Compute Opening Range Breakout data at 9:31 AM."""
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _setup():
+        from src.config import settings
+        if not settings.intraday_enabled:
+            return
+        from src.services.intraday_monitor import intraday_monitor
+        logger.info("Setting up ORB data for intraday watchlist")
+        await intraday_monitor.setup_orb()
+
+    try:
+        await _timed_job("intraday_orb_setup", _setup())
+    except ImportError:
+        pass
+
+
+async def intraday_hard_exit_job() -> None:
+    """Send CRITICAL alert at 3:15 PM to exit all open MIS positions."""
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _exit():
+        from src.config import settings
+        if not settings.intraday_enabled:
+            return
+        from src.services.intraday_monitor import intraday_monitor
+        logger.info("Intraday hard exit alert — sending to all open positions")
+        await intraday_monitor.hard_exit_alert()
+
+    try:
+        await _timed_job("intraday_hard_exit", _exit())
+    except ImportError:
+        pass
+
+
+async def intraday_daily_report_job() -> None:
+    """Generate and send intraday EOD P&L report at 3:35 PM."""
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _report():
+        from src.config import settings
+        if not settings.intraday_enabled:
+            return
+        from src.services.intraday_scanner import intraday_scanner
+        logger.info("Generating intraday daily P&L report")
+        report = await intraday_scanner.generate_daily_report()
+        text = intraday_scanner.format_daily_report(report)
+        await telegram_service.send_message(
+            f"<b>Intraday EOD</b>\n\n{text}", parse_mode="HTML"
+        )
+
+    try:
+        await _timed_job("intraday_daily_report", _report())
+    except ImportError:
+        pass

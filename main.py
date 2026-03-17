@@ -7,6 +7,7 @@ V2 startup order:
     4. Initialize Telegram bot
     5. Start scheduler
     6. Start MicroMonitor (10-second polling loop) — Phase 2
+    7. Start IntradayMonitor (1-minute polling loop) — v2.2
     7. Send startup notification
 
 Shutdown: reverse order.
@@ -24,6 +25,8 @@ from src.scheduler.setup import create_scheduler, register_jobs
 from src.services.database import db
 from src.services.groww_service import groww_service
 from src.services.micro_monitor import micro_monitor
+from src.services.intraday_monitor import intraday_monitor
+from src.services.intraday_scanner import intraday_scanner
 from src.services.telegram_bot import telegram_service
 from src.utils.logger import setup_logging
 
@@ -62,7 +65,12 @@ async def lifespan(app: FastAPI):
     micro_monitor.start()
     logger.info("MicroMonitor started (10-second price polling)")
 
-    # 6. Send startup notification
+    # 6. Start IntradayMonitor (1-minute cycle) — v2.2
+    if settings.intraday_enabled:
+        await intraday_monitor.start()
+        logger.info("IntradayMonitor started (1-minute intraday cycle)")
+
+    # 7. Send startup notification
     try:
         await telegram_service.send_message(
             "<b>Stock AI Monitor v2 Started</b>\n\n"
@@ -84,6 +92,10 @@ async def lifespan(app: FastAPI):
 
     micro_monitor.stop()
     logger.info("MicroMonitor stopped")
+
+    if settings.intraday_enabled:
+        await intraday_monitor.stop()
+        logger.info("IntradayMonitor stopped")
 
     scheduler.shutdown(wait=True)
     logger.info("Scheduler stopped")
