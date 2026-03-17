@@ -93,6 +93,11 @@ class TelegramBotService:
         self.app.add_handler(CommandHandler("ipnl", self._cmd_ipnl))
         self.app.add_handler(CommandHandler("iscan", self._cmd_iscan))
         self.app.add_handler(CommandHandler("irisk", self._cmd_irisk))
+        # V3.0 commands
+        self.app.add_handler(CommandHandler("events", self._cmd_events))
+        self.app.add_handler(CommandHandler("calibration", self._cmd_calibration))
+        self.app.add_handler(CommandHandler("allocation", self._cmd_allocation))
+        self.app.add_handler(CommandHandler("kelly", self._cmd_kelly))
 
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
@@ -116,6 +121,11 @@ class TelegramBotService:
             BotCommand("ipnl", "Today intraday P&L summary"),
             BotCommand("iscan", "Trigger on-demand intraday scan"),
             BotCommand("irisk", "Intraday risk status"),
+            # V3.0 commands
+            BotCommand("events", "Upcoming corporate events for holdings"),
+            BotCommand("calibration", "AI signal accuracy stats"),
+            BotCommand("allocation", "Portfolio beta, sectors, correlations"),
+            BotCommand("kelly", "Kelly sizing: /kelly RELIANCE BUY 2450 2400 2550"),
         ])
         logger.info("Telegram bot initialized with command handlers")
 
@@ -527,6 +537,139 @@ class TelegramBotService:
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
         except Exception as e:
             await update.message.reply_text(f"Risk status unavailable: {str(e)[:200]}")
+
+    # ── V3.0 Command Handlers ─────────────────────────────────────────────────
+
+    async def _cmd_events(self, update, context) -> None:
+        """Show upcoming corporate events for all current holdings."""
+        await update.message.reply_text("📅 Fetching corporate events...")
+        try:
+            from src.services.event_risk_filter import event_risk_filter
+            from src.services.groww_service import groww_service
+            holdings = await groww_service.get_holdings()
+            symbols = [h.trading_symbol for h in holdings]
+            events = await event_risk_filter.get_events_for_holdings(symbols, days_ahead=14)
+            if not events:
+                await update.message.reply_text(
+                    "✅ No upcoming corporate events in the next 14 days for your holdings."
+                )
+                return
+            lines = ["<b>📅 Upcoming Corporate Events (14 days)</b>\n"]
+            for sym, evts in sorted(events.items()):
+                for e in evts:
+                    from datetime import date
+                    days_until = (e.event_date - date.today()).days
+                    icon = "🔴" if days_until <= 3 else "🟡" if days_until <= 7 else "🟢"
+                    friendly = e.event_type.replace("_", " ").title()
+                    lines.append(
+                        f"{icon} <b>{sym}</b> — {friendly}\n"
+                        f"   {e.event_date.strftime('%d %b')} ({days_until}d) · {e.description[:60]}"
+                    )
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"Events fetch failed: {str(e)[:200]}")
+
+    async def _cmd_calibration(self, update, context) -> None:
+        """Show AI signal calibration statistics."""
+        await update.message.reply_text("📊 Loading calibration data...")
+        try:
+            from src.services.signal_calibrator import signal_calibrator
+            cal = await signal_calibrator.get_current_calibration()
+            if not cal:
+                await update.message.reply_text(
+                    "No calibration data yet. Data accumulates after the nightly job runs."
+                )
+                return
+            lines = [
+                "<b>📊 Signal Calibration Report</b>\n",
+                f"Signals analyzed: {cal.total_signals_analyzed} (last {cal.lookback_days} days)",
+                f"Overall win rate: <b>{cal.overall_win_rate:.1%}</b>",
+                "",
+                "<b>Confidence Bucket → Actual Win Rate:</b>",
+            ]
+            for b in cal.buckets:
+                err_tag = "" if b.calibration_error > 0.10 else "✅"
+                lines.append(
+                    f"{err_tag} {b.bucket}: {b.win_rate:.1%} actual "
+                    f"({b.count} signals, err: {b.calibration_error:.2f})"
+                )
+            if cal.best_bucket:
+                lines.append(f"\n🏆 Best bucket: {cal.best_bucket}")
+            if cal.worst_bucket:
+                lines.append(f" Worst bucket: {cal.worst_bucket}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except ImportError:
+            await update.message.reply_text("Signal calibrator not yet active.")
+        except Exception as e:
+            await update.message.reply_text(f"Calibration fetch failed: {str(e)[:200]}")
+
+    async def _cmd_allocation(self, update, context) -> None:
+        """Show portfolio allocation report: beta, sectors, correlations."""
+        await update.message.reply_text("📐 Computing portfolio allocation...")
+        try:
+            from src.services.capital_allocator import capital_allocator
+            report = await capital_allocator.get_full_allocation_report()
+            beta_icon = "🔴" if report.portfolio_beta and report.portfolio_beta > 1.5 else "🟢"
+            lines = [
+                "<b>📐 Portfolio Allocation Report</b>\n",
+                f"{beta_icon} Portfolio Beta: {report.portfolio_beta:.2f}" if report.portfolio_beta else "Beta: N/A",
+                f"Holdings: {report.total_holdings}",
+                "",
+                "<b>Sector Weights:</b>",
+            ]
+            for sector, weight in sorted(report.sector_weights.items(), key=lambda x: x[1], reverse=True):
+                icon = "" if sector in report.concentrated_sectors else "  "
+                lines.append(f"{icon} {sector}: {weight:.1%}")
+            if report.high_correlation_pairs:
+                lines.append("\n<b>High Correlation Pairs (>80%):</b>")
+                for pair in report.high_correlation_pairs[:5]:
+                    lines.append(f"⚡ {pair.get('a')} ↔ {pair.get('b')}: {pair.get('corr', 0):.2f}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except ImportError:
+            await update.message.reply_text("Capital allocator not yet active.")
+        except Exception as e:
+            await update.message.reply_text(f"Allocation fetch failed: {str(e)[:200]}")
+
+    async def _cmd_kelly(self, update, context) -> None:
+        """Compute Kelly position size. Usage: /kelly SYMBOL ACTION ENTRY SL TARGET"""
+        args = context.args
+        if not args or len(args) < 5:
+            await update.message.reply_text(
+                "Usage: /kelly SYMBOL ACTION ENTRY STOP_LOSS TARGET\n"
+                "Example: /kelly RELIANCE BUY 2450 2400 2550"
+            )
+            return
+        try:
+            symbol = args[0].upper()
+            action = args[1].upper()
+            entry = float(args[2])
+            stop_loss = float(args[3])
+            target = float(args[4])
+            if action not in ("BUY", "STRONG_BUY"):
+                await update.message.reply_text("Action must be BUY or STRONG_BUY.")
+                return
+            from src.services.capital_allocator import capital_allocator
+            kelly = await capital_allocator.get_kelly_recommendation(
+                symbol=symbol, action=action, confidence=0.75,
+                entry_price=entry, stop_loss=stop_loss, target_price=target,
+            )
+            rr = round((target - entry) / abs(entry - stop_loss), 2) if abs(entry - stop_loss) > 0 else 0
+            lines = [
+                f"<b>Kelly Sizing — {symbol}</b>\n",
+                f"Action: {action} @ ₹{entry}",
+                f"Stop: ₹{stop_loss}  Target: ₹{target}  (R:R = 1:{rr})",
+                f"\n<b>Recommended: {kelly.recommended_qty} shares (₹{kelly.recommended_value_rs:.0f})</b>",
+                f"Kelly fraction: {kelly.kelly_fraction:.1%} of portfolio",
+                f"Max risk: ₹{kelly.max_risk_rs:.0f}",
+                f"Win rate used: {kelly.win_rate_used:.1%}",
+            ]
+            if kelly.note:
+                lines.append(f"\n📝 {kelly.note}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except ImportError:
+            await update.message.reply_text("Capital allocator not yet active.")
+        except Exception as e:
+            await update.message.reply_text(f"Kelly calc failed: {str(e)[:200]}")
 
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

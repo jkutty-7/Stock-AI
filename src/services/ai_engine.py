@@ -90,6 +90,34 @@ class AIAnalysisEngine:
 
     def __init__(self) -> None:
         self.client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._cached_system_prompt: Optional[str] = None  # V3: calibration-enriched prompt
+        self._prompt_built_at: Optional[datetime] = None   # V3: cache timestamp
+
+    async def _get_system_prompt(self) -> str:
+        """Return the system prompt, enriched with nightly calibration context (V3).
+
+        The calibration context is cached for 1 hour to avoid repeated DB reads.
+        Falls back to the base SYSTEM_PROMPT if calibration is unavailable.
+        """
+        if (
+            self._cached_system_prompt
+            and self._prompt_built_at
+            and (datetime.now() - self._prompt_built_at).total_seconds() < 3600
+        ):
+            return self._cached_system_prompt
+
+        try:
+            if settings.calibration_enabled:
+                from src.services.signal_calibrator import signal_calibrator
+                calibration_text = await signal_calibrator.get_calibration_context_for_claude()
+                if calibration_text:
+                    self._cached_system_prompt = SYSTEM_PROMPT + "\n\n" + calibration_text
+                    self._prompt_built_at = datetime.now()
+                    return self._cached_system_prompt
+        except Exception as e:
+            logger.debug(f"Could not load calibration context: {e}")
+
+        return SYSTEM_PROMPT
 
     async def analyze_portfolio(self, context: dict[str, Any]) -> AnalysisResult:
         """Run comprehensive portfolio health analysis."""
@@ -247,11 +275,12 @@ class AIAnalysisEngine:
 
     async def _claude_call(self, messages: list, max_tokens: int):
         """Call Claude API with timeout and one retry on timeout."""
+        system_prompt = await self._get_system_prompt()  # V3: may include calibration context
         try:
             return await self.client.messages.create(
                 model=settings.claude_model,
                 max_tokens=max_tokens,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 tools=TOOL_DEFINITIONS,
                 messages=messages,
             )
@@ -260,7 +289,7 @@ class AIAnalysisEngine:
             return await self.client.messages.create(
                 model=settings.claude_model,
                 max_tokens=max_tokens,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 tools=TOOL_DEFINITIONS,
                 messages=messages,
             )

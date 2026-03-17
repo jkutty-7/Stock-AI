@@ -53,6 +53,13 @@ class Database:
     portfolio_peaks: AsyncCollection  # v2.1: Portfolio peak tracking for drawdown breaker
     circuit_breaker_state: AsyncCollection  # v2.1: Circuit breaker state
     market_regime: AsyncCollection  # v2.1: Market regime classification
+    # V3.0 collections
+    corporate_events: AsyncCollection         # 3C: NSE corporate calendar events
+    confidence_calibration: AsyncCollection   # 3A: Confidence bucket win rates
+    pattern_performance: AsyncCollection      # 3A: Reasoning-tag pattern win rates
+    regime_signal_performance: AsyncCollection  # 3A: Win rate per market regime
+    portfolio_correlation: AsyncCollection    # 3B: Pairwise correlation matrix
+    portfolio_beta: AsyncCollection           # 3B: Portfolio beta snapshots
 
     async def connect(self) -> None:
         """Initialize MongoDB connection and create indexes."""
@@ -80,6 +87,13 @@ class Database:
         self.portfolio_peaks = self.db["portfolio_peaks"]  # v2.1
         self.circuit_breaker_state = self.db["circuit_breaker_state"]  # v2.1
         self.market_regime = self.db["market_regime"]  # v2.1
+        # V3.0 collections
+        self.corporate_events = self.db["corporate_events"]
+        self.confidence_calibration = self.db["confidence_calibration"]
+        self.pattern_performance = self.db["pattern_performance"]
+        self.regime_signal_performance = self.db["regime_signal_performance"]
+        self.portfolio_correlation = self.db["portfolio_correlation"]
+        self.portfolio_beta = self.db["portfolio_beta"]
 
         await self._create_indexes()
         logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
@@ -173,6 +187,39 @@ class Database:
         await self._create_ttl_index(
             self.market_regime, "timestamp", 365 * 86400, "regime_ttl"
         )
+
+        # V3.0 indexes ──────────────────────────────────────────────────────
+
+        # corporate_events — compound unique key + 30-day TTL on scraped_at
+        await self.corporate_events.create_index(
+            [("symbol", ASCENDING), ("event_type", ASCENDING), ("event_date", ASCENDING)],
+            unique=True,
+            name="corp_events_unique",
+        )
+        await self.corporate_events.create_index([("event_date", ASCENDING)])
+        await self._create_ttl_index(
+            self.corporate_events, "scraped_at", 30 * 86400, "corp_events_ttl"
+        )
+
+        # confidence_calibration — fast lookup of current calibration snapshot
+        await self.confidence_calibration.create_index([("is_current", ASCENDING)])
+        await self.confidence_calibration.create_index([("computed_at", DESCENDING)])
+
+        # pattern_performance — ranked by win_rate for top-pattern queries
+        await self.pattern_performance.create_index(
+            [("win_rate", DESCENDING), ("count", DESCENDING)]
+        )
+        await self.pattern_performance.create_index([("computed_at", DESCENDING)])
+
+        # regime_signal_performance — latest regime stats
+        await self.regime_signal_performance.create_index([("computed_at", DESCENDING)])
+        await self.regime_signal_performance.create_index([("regime", ASCENDING)])
+
+        # portfolio_correlation — latest correlation snapshot
+        await self.portfolio_correlation.create_index([("computed_at", DESCENDING)])
+
+        # portfolio_beta — latest beta snapshot
+        await self.portfolio_beta.create_index([("computed_at", DESCENDING)])
 
     async def _create_ttl_index(
         self,

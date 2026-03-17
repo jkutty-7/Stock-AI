@@ -113,6 +113,7 @@ class PortfolioMonitor:
                 await db.save_analysis(analysis)
 
                 # Step 7: Generate alerts for high-confidence AI signals
+                from src.services.event_risk_filter import event_risk_filter
                 for signal in analysis.signals:
                     # Base threshold
                     min_confidence = 0.7
@@ -122,17 +123,8 @@ class PortfolioMonitor:
                         regime_min_conf = current_regime.get("suggested_min_confidence", 0.7)
                         min_confidence = max(min_confidence, regime_min_conf)
 
-                    if signal.confidence >= min_confidence:
-                        # Feature 3: Block BUY signals if drawdown breaker is triggered
-                        if signal.action in [ActionType.BUY, ActionType.STRONG_BUY]:
-                            if drawdown_status["breaker_triggered"]:
-                                logger.warning(
-                                    f"Drawdown breaker BLOCKED BUY signal for {signal.trading_symbol} "
-                                    f"(confidence: {signal.confidence:.2f}, drawdown: {drawdown_status['drawdown_pct']:.2f}%)"
-                                )
-                                continue  # Skip this signal
-                    else:
-                        # Signal filtered by regime threshold
+                    # Skip low-confidence signals (bug fix: was unreachable in v2)
+                    if signal.confidence < min_confidence:
                         if current_regime:
                             logger.info(
                                 f"Regime filter BLOCKED {signal.action.value} signal for {signal.trading_symbol} "
@@ -141,27 +133,50 @@ class PortfolioMonitor:
                             )
                         continue  # Skip low-confidence signal
 
-                        alert = AlertMessage(
-                            timestamp=datetime.now(),
-                            alert_type="AI_SIGNAL",
-                            severity="CRITICAL" if signal.confidence >= 0.85 else "WARNING",
-                            title=f"{signal.action.value}: {signal.trading_symbol}",
-                            body=signal.reasoning[:500],
-                            trading_symbol=signal.trading_symbol,
-                            signal=signal,
-                        )
-                        alerts.append(alert)
-                        signal_id = await db.save_signal(signal.model_dump(mode="json"))
-
-                        # Track outcome for signal validation (Feature 1)
-                        try:
-                            await outcome_tracker.track_new_signal(
-                                signal_id=signal_id,
-                                signal=signal,
-                                entry_price=signal.current_price,
+                    # Feature 3: Block BUY signals if drawdown breaker is triggered
+                    if signal.action in [ActionType.BUY, ActionType.STRONG_BUY]:
+                        if drawdown_status["breaker_triggered"]:
+                            logger.warning(
+                                f"Drawdown breaker BLOCKED BUY signal for {signal.trading_symbol} "
+                                f"(confidence: {signal.confidence:.2f}, drawdown: {drawdown_status['drawdown_pct']:.2f}%)"
                             )
-                        except Exception as e:
-                            logger.warning(f"Failed to track outcome for signal {signal_id}: {e}")
+                            continue  # Skip this signal
+
+                        # V3.0: Event risk gate — downgrade BUY to WATCH if event is imminent
+                        if settings.event_risk_enabled:
+                            try:
+                                evt_risk = await event_risk_filter.check_entry_risk(signal.trading_symbol)
+                                if evt_risk.blocked:
+                                    signal.event_risk = evt_risk.reason
+                                    signal.reasoning += f"\n\n EVENT RISK: {evt_risk.reason}"
+                                    signal.action = ActionType.WATCH  # Downgrade from BUY/STRONG_BUY
+                                    logger.warning(
+                                        f"Event risk DOWNGRADED {signal.trading_symbol} to WATCH: {evt_risk.reason}"
+                                    )
+                            except Exception as _ev_err:
+                                logger.debug(f"Event risk check skipped for {signal.trading_symbol}: {_ev_err}")
+
+                    alert = AlertMessage(
+                        timestamp=datetime.now(),
+                        alert_type="AI_SIGNAL",
+                        severity="CRITICAL" if signal.confidence >= 0.85 else "WARNING",
+                        title=f"{signal.action.value}: {signal.trading_symbol}",
+                        body=signal.reasoning[:500],
+                        trading_symbol=signal.trading_symbol,
+                        signal=signal,
+                    )
+                    alerts.append(alert)
+                    signal_id = await db.save_signal(signal.model_dump(mode="json"))
+
+                    # Track outcome for signal validation (Feature 1)
+                    try:
+                        await outcome_tracker.track_new_signal(
+                            signal_id=signal_id,
+                            signal=signal,
+                            entry_price=signal.current_price,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to track outcome for signal {signal_id}: {e}")
 
             except Exception as e:
                 logger.error(f"AI analysis failed (non-fatal): {e}")

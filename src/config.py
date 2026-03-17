@@ -86,6 +86,25 @@ class Settings(BaseSettings):
     regime_classification_enabled: bool = Field(default=True, description="Enable daily market regime classification")
     regime_index_symbol: str = Field(default="NIFTY 50", description="Index symbol for regime classification")
 
+    # --- Event Risk Filter (Phase 3C) ---
+    event_risk_enabled: bool = Field(default=True, description="Block trade entries near corporate events (results, dividends, etc.)")
+    event_risk_lookback_days: int = Field(default=3, description="Block entries this many days before an event")
+
+    # --- Signal Calibration (Phase 3A) ---
+    calibration_enabled: bool = Field(default=True, description="Enable nightly confidence calibration from signal outcomes")
+    calibration_lookback_days: int = Field(default=90, description="Days of closed signal outcomes to analyze")
+    calibration_min_samples: int = Field(default=5, description="Minimum signals per bucket to trust empirical win rate")
+    calibration_refresh_hour: int = Field(default=20, description="Hour (IST) to run nightly calibration job (default 8 PM)")
+
+    # --- Capital Allocation / Kelly Criterion (Phase 3B) ---
+    capital_allocation_enabled: bool = Field(default=True, description="Enable Kelly-optimal position sizing")
+    kelly_fraction: float = Field(default=0.5, description="Kelly multiplier: 0.5 = half-Kelly (conservative), 1.0 = full Kelly")
+    kelly_max_position_pct: float = Field(default=20.0, description="Never allocate more than this % of portfolio to one stock")
+    kelly_min_position_pct: float = Field(default=1.0, description="Minimum meaningful position size as % of portfolio")
+    correlation_guard_enabled: bool = Field(default=True, description="Block new positions highly correlated with existing holdings")
+    correlation_threshold: float = Field(default=0.80, description="Pearson correlation above this blocks new entry (0.0–1.0)")
+    sector_cap_enabled: bool = Field(default=True, description="Limit maximum allocation to any single sector")
+    sector_max_pct: float = Field(default=30.0, description="Maximum % allocation to any single GICS sector")
 
     # --- Intraday Trading ---
     intraday_enabled: bool = Field(default=True, description="Enable intraday trading module")

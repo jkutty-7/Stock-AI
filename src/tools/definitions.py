@@ -339,4 +339,116 @@ TOOL_DEFINITIONS = [
             "additionalProperties": False,
         },
     },
+    # ── V3.0 Tools ──────────────────────────────────────────────────────────────
+    {
+        "name": "get_event_calendar",
+        "description": (
+            "Get upcoming NSE corporate events for a stock within the next N days. "
+            "Events include: board meetings (quarterly/annual results), dividend ex-dates, "
+            "bonus ex-dates, stock splits, AGMs, buybacks, and rights issues. "
+            "ALWAYS call this before recommending a BUY or STRONG_BUY action — "
+            "entering a position 1-3 days before results is extremely high risk. "
+            "If an event is within 3 days, recommend WATCH instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trading_symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol (e.g., 'RELIANCE', 'TCS')",
+                },
+                "days_ahead": {
+                    "type": "integer",
+                    "description": "Look-ahead window in days (default: 14, max: 30)",
+                    "minimum": 1,
+                    "maximum": 30,
+                },
+            },
+            "required": ["trading_symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_signal_calibration",
+        "description": (
+            "Get your historical win rate for a specific confidence level or reasoning tag pattern. "
+            "Use this to calibrate how confident you should be in this analysis. "
+            "Returns: empirical win rate for the confidence bucket, pattern-specific stats "
+            "(e.g., how often RSI_oversold + MACD_crossover signals have won), and "
+            "regime-adjusted performance (your win rate in current market regime). "
+            "If your 0.75 confidence signals have historically won only 45% of the time, "
+            "you are over-confident and should lower confidence or raise your evidence bar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "confidence_level": {
+                    "type": "number",
+                    "description": (
+                        "Your planned confidence score (0.0–1.0). "
+                        "Returns empirical win rate for the containing bucket (e.g., 0.75 → 0.7–0.8 bucket)"
+                    ),
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "reasoning_tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of reasoning tags you plan to use (e.g., ['RSI_oversold', 'MACD_bullish_crossover']). "
+                        "Returns historical win rate for this tag combination."
+                    ),
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_capital_allocation",
+        "description": (
+            "Get Kelly-optimal position size, correlation risk check, and sector concentration check "
+            "before recommending a BUY or STRONG_BUY signal. "
+            "Returns: recommended quantity (shares), recommended value (Rs.), Kelly fraction, "
+            "correlation warning if the stock is highly correlated with an existing holding "
+            "(Pearson > 0.80), and sector concentration warning if adding this stock would "
+            "push a sector above the 30% cap. "
+            "Use this for every BUY signal to tell the user exactly how many shares to buy "
+            "instead of leaving sizing to guesswork."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trading_symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol (e.g., 'RELIANCE')",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["BUY", "STRONG_BUY"],
+                    "description": "Intended trade action",
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "Your planned confidence score (0.0–1.0)",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "entry_price": {
+                    "type": "number",
+                    "description": "Planned entry price in Rs.",
+                },
+                "stop_loss": {
+                    "type": "number",
+                    "description": "Stop-loss price in Rs.",
+                },
+                "target_price": {
+                    "type": "number",
+                    "description": "Target price in Rs.",
+                },
+            },
+            "required": ["trading_symbol", "action", "confidence", "entry_price", "stop_loss", "target_price"],
+            "additionalProperties": False,
+        },
+    },
 ]
