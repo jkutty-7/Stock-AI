@@ -1,14 +1,15 @@
 """FastAPI application entry point with lifespan management.
 
-V2 startup order:
+V3 startup order:
     1. Configure logging
     2. Connect to MongoDB
     3. Authenticate with Groww
     4. Initialize Telegram bot
-    5. Start scheduler
-    6. Start MicroMonitor (10-second polling loop) — Phase 2
-    7. Start IntradayMonitor (1-minute polling loop) — v2.2
-    7. Send startup notification
+    5. V3: Load event risk cache from MongoDB (Phase 3C)
+    6. Start scheduler
+    7. Start MicroMonitor (10-second polling loop) — Phase 2
+    8. Start IntradayMonitor (1-minute polling loop) — v2.2
+    9. Send startup notification
 
 Shutdown: reverse order.
 """
@@ -24,6 +25,7 @@ from src.config import settings
 from src.scheduler.setup import create_scheduler, register_jobs
 from src.services.database import db
 from src.services.groww_service import groww_service
+from src.services.event_risk_filter import event_risk_filter
 from src.services.micro_monitor import micro_monitor
 from src.services.intraday_monitor import intraday_monitor
 from src.services.intraday_scanner import intraday_scanner
@@ -54,29 +56,40 @@ async def lifespan(app: FastAPI):
     await telegram_service.start()
     logger.info("Telegram bot started")
 
-    # 4. Setup and start scheduler
+    # 4. V3.0: Load event risk cache from MongoDB (Phase 3C)
+    if settings.event_risk_enabled:
+        try:
+            await event_risk_filter._reload_cache()
+            logger.info(
+                f"EventRiskFilter cache loaded: {event_risk_filter.cache_size} symbols"
+            )
+        except Exception as e:
+            logger.warning(f"Could not pre-load event risk cache: {e}")
+
+    # 5. Setup and start scheduler
     scheduler = create_scheduler()
     register_jobs(scheduler)
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info("Scheduler started with market-hours jobs")
 
-    # 5. Start MicroMonitor (10-second price polling) — Phase 2
+    # 6. Start MicroMonitor (10-second price polling) — Phase 2
     micro_monitor.start()
     logger.info("MicroMonitor started (10-second price polling)")
 
-    # 6. Start IntradayMonitor (1-minute cycle) — v2.2
+    # 7. Start IntradayMonitor (1-minute cycle) — v2.2
     if settings.intraday_enabled:
         await intraday_monitor.start()
         logger.info("IntradayMonitor started (1-minute intraday cycle)")
 
-    # 7. Send startup notification
+    # 8. Send startup notification
     try:
         await telegram_service.send_message(
-            "<b>Stock AI Monitor v2 Started</b>\n\n"
+            "<b>Stock AI Monitor v3 Started</b>\n\n"
             "All systems online.\n"
             "• 10-second live price tracking active\n"
             "• AI analysis every 15 minutes during market hours\n"
+            "• Event risk filter active — BUY signals guarded before corporate events\n"
             "• Daily screener at 9:30 AM IST\n"
             "Use /help to see all commands."
         )
@@ -136,8 +149,9 @@ async def health():
     return {
         "status": "ok",
         "service": "stock-ai",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "micro_monitor": "running" if micro_monitor._running else "stopped",
+        "event_risk_cache_size": event_risk_filter.cache_size,
     }
 
 

@@ -288,3 +288,101 @@ async def intraday_daily_report_job() -> None:
         await _timed_job("intraday_daily_report", _report())
     except ImportError:
         pass
+
+
+# ── V3.0 Scheduled Jobs ───────────────────────────────────────────────────────
+
+async def refresh_events_job() -> None:
+    """Fetch NSE corporate calendar for the next 30 days (Phase 3C).
+
+    Runs at 8:50 AM before market open and pre-market scan.
+    Stores events in MongoDB; in-memory cache rebuilt automatically.
+    """
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _refresh():
+        from src.config import settings
+        if not settings.event_risk_enabled:
+            logger.info("[Job:refresh_events] Event risk filter disabled — skipping")
+            return
+
+        from src.services.event_risk_filter import event_risk_filter
+        logger.info("Refreshing NSE corporate event calendar")
+        saved = await event_risk_filter.refresh_calendar()
+        logger.info(f"refresh_events_job: {saved} events saved/updated")
+
+        if saved > 0:
+            await telegram_service.send_message(
+                f"📅 <b>Event Calendar Refreshed</b>\n\n"
+                f"{saved} upcoming corporate events loaded (next 30 days).\n"
+                f"Entry risk filter is active.",
+                parse_mode="HTML",
+            )
+
+    await _timed_job("refresh_events", _refresh())
+
+
+async def nightly_calibration_job() -> None:
+    """Compute signal calibration from closed outcomes (Phase 3A).
+
+    Runs at 8 PM after market close and outcome tracking have completed.
+    """
+    async def _calibrate():
+        from src.config import settings
+        if not settings.calibration_enabled:
+            logger.info("[Job:nightly_calibration] Calibration disabled — skipping")
+            return
+
+        from src.services.signal_calibrator import signal_calibrator
+        logger.info("Running nightly signal calibration")
+        cal = await signal_calibrator.compute_calibration()
+        if cal:
+            await signal_calibrator.compute_pattern_performance()
+            await signal_calibrator.compute_regime_performance()
+            logger.info(
+                f"Calibration complete: {cal.total_signals_analyzed} signals analyzed, "
+                f"overall win rate {cal.overall_win_rate:.1%}"
+            )
+        else:
+            logger.info("Insufficient data for calibration this run")
+
+    try:
+        await _timed_job("nightly_calibration", _calibrate())
+    except ImportError:
+        logger.info("signal_calibrator not yet active — skipping nightly_calibration_job")
+
+
+async def portfolio_beta_job() -> None:
+    """Compute portfolio beta and correlation matrix after market close (Phase 3B).
+
+    Runs at 4 PM after the market closes.
+    """
+    if is_market_holiday(now_ist()):
+        return
+
+    async def _beta():
+        from src.config import settings
+        if not settings.capital_allocation_enabled:
+            return
+
+        from src.services.capital_allocator import capital_allocator
+        logger.info("Computing portfolio beta and correlation matrix")
+        report = await capital_allocator.compute_portfolio_beta()
+        logger.info(
+            f"Portfolio beta: {report.portfolio_beta:.2f} ({report.interpretation})"
+        )
+
+        if report.portfolio_beta > 1.5:
+            await telegram_service.send_message(
+                f" <b>High Portfolio Beta Alert</b>\n\n"
+                f"Portfolio β = {report.portfolio_beta:.2f}\n"
+                f"{report.interpretation}\n\n"
+                f"Consider reducing aggressive positions.",
+                parse_mode="HTML",
+            )
+
+    try:
+        await _timed_job("portfolio_beta", _beta())
+    except ImportError:
+        logger.info("capital_allocator not yet active — skipping portfolio_beta_job")

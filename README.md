@@ -1,6 +1,40 @@
-# Stock AI v2.2 - AI-Powered Portfolio Monitoring & Intraday Trading
+# Stock AI v3.0 - AI-Powered Portfolio Monitoring with Intelligent Capital Architecture
 
-An intelligent stock trading system that combines real-time price tracking, AI-powered analysis, intraday day trading intelligence, and technical stock screening to deliver actionable signals directly to your Telegram.
+An intelligent stock trading system that combines real-time price tracking, AI-powered analysis, intraday day trading intelligence, technical stock screening, and now — intelligent capital allocation with Kelly-optimal sizing, correlation guards, and corporate event risk filtering.
+
+## What's New in V3.0
+
+**Version 3.0** adds three compounding layers of intelligence on top of the v2.2 engine, solving the biggest pain point: **capital not being allocated optimally**.
+
+### Phase 3C — Event Risk Filter *(highest immediate impact)*
+Prevents entering a trade days before a high-risk corporate event (results, board meeting, dividend ex-date, bonus ex-date):
+
+1. **NSE Corporate Calendar** - Daily scrape at 8:50 AM of NSE's corporate actions API, caching events per symbol in-memory
+2. **Pre-entry Gate** - Before any BUY/STRONG_BUY signal is sent, the system checks if any corporate event is within 3 days. If blocked, the signal is downgraded from BUY → WATCH with a reason attached
+3. **Intraday Pre-filter** - Zero-cost event gate at 9:30 AM before Claude is even called for intraday entries (no API tokens wasted)
+4. **`/events` command** - Telegram command listing all upcoming corporate events for your current holdings (color-coded 🔴🟡🟢 by urgency)
+5. **`get_event_calendar` Claude tool** - Claude can check the NSE calendar for any symbol during analysis
+
+### Phase 3A — Signal Intelligence Layer
+Uses the `signal_outcomes` data that's been accumulating since v2.1 to teach Claude its own accuracy:
+
+1. **Confidence Calibration** - Groups 90 days of closed signals into confidence buckets (0.5–0.6, 0.6–0.7, ... 0.9–1.0) and computes empirical win rates per bucket to detect over-confidence
+2. **Pattern Performance** - Tracks which combinations of reasoning tags (`RSI_oversold`, `MACD_bullish_crossover`, etc.) produce the highest win rates
+3. **Regime Performance** - Measures how signals perform in each market regime (BULL_STRONG → 71%, SIDEWAYS → 43%, BEAR_WEAK → 31%)
+4. **Dynamic System Prompt** - Every evening at 8 PM, Claude's system prompt is rebuilt with its own historical accuracy stats. Claude now knows "in SIDEWAYS regime, raise the confidence bar to 0.85+"
+5. **`/calibration` command** - Shows confidence bucket win rates, best/worst patterns, regime performance
+6. **`get_signal_calibration` Claude tool** - Claude can look up its empirical win rate for a confidence level or reasoning pattern
+
+### Phase 3B — Capital Allocation Engine *(requires 3A win rates)*
+Replaces the fixed Rs. 500 risk sizing with Kelly-optimal position sizing:
+
+1. **Half-Kelly Position Sizing** - `f = (W × b − L) / b × 0.5` using calibrated win rates + historical win/loss percentages. Clamped to 1%–20% of portfolio
+2. **Correlation Guard** - Before a BUY signal is sent, Pearson correlation is computed between the new symbol and all current holdings (30-day daily returns). Blocks if any pair exceeds 0.80 correlation
+3. **Sector Concentration Cap** - Blocks new buys when adding the position would push any sector above 30% of portfolio value
+4. **Portfolio Beta** - Daily computation at 4 PM of portfolio-weighted beta vs. Nifty 50 (using 252 days of data). Alert if beta > 1.5 or < 0.5
+5. **`/allocation` command** - Full portfolio report: beta, sector weights %, high-correlation pairs
+6. **`/kelly SYMBOL BUY ENTRY SL TARGET`** - Ad-hoc Kelly sizing for any potential trade
+7. **`get_capital_allocation` Claude tool** - Claude can run full Kelly + correlation + sector check before recommending a BUY
 
 ## What's New in V2.2
 
@@ -40,7 +74,7 @@ An intelligent stock trading system that combines real-time price tracking, AI-p
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                    STOCK AI v2.2 ARCHITECTURE                         │
+│                    STOCK AI v3.0 ARCHITECTURE                         │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                        │
 │  ══════════════════ INTRADAY PIPELINE (v2.2) ══════════════════       │
@@ -72,12 +106,24 @@ An intelligent stock trading system that combines real-time price tracking, AI-p
 │  3:15 PM ──> Hard Exit: CRITICAL alert for all open MIS positions    │
 │  3:35 PM ──> EOD P&L Report: wins/losses, total P&L, best/worst     │
 │                                                                        │
-│  ══════════════════ LONG-TERM PIPELINE (v2.1) ═════════════════       │
+│  ══════════════════ LONG-TERM PIPELINE (v3.0) ═════════════════       │
+│                                                                        │
+│  8:50 AM ──> NSE Corporate Calendar Scrape ── Phase 3C               │
+│              └── Event cache: {symbol → [events]} per holding         │
+│                                                                        │
+│  8 PM nightly ──> Signal Calibration Job ── Phase 3A                 │
+│              ├── Confidence bucket win rates (0.5–1.0 buckets)        │
+│              ├── Pattern performance (RSI+MACD combos etc.)           │
+│              ├── Regime performance (BULL→71%, SIDEWAYS→43%)          │
+│              └── Rebuild Claude system prompt with own accuracy data  │
 │                                                                        │
 │  Nifty 50 ──────────> Daily Regime Classification (9:20 AM)          │
 │                       (BULL/BEAR/SIDEWAYS scoring)                    │
 │                                   ↓                                    │
 │                       Adjust Confidence Thresholds                    │
+│                                                                        │
+│  4 PM ──> Portfolio Beta Job ── Phase 3B                             │
+│           └── Pearson corr matrix + beta vs Nifty (252 days)         │
 │                                                                        │
 │  Groww Holdings ──┬──> 10s Price Polling (MicroMonitor)               │
 │                   │         ↓                                          │
@@ -85,12 +131,19 @@ An intelligent stock trading system that combines real-time price tracking, AI-p
 │                   │    • Stop-Loss Breach Detection ⭐ v2.1           │
 │                   │         ↓                                          │
 │                   ├──> 15min AI Analysis ─┬─> Claude AI               │
-│                   │    • Technical Signals │   (14 tools)             │
-│                   │    • P&L Enrichment   │   • Signal perf ⭐        │
-│                   │    • Micro context    │   • Intraday tools ⭐ v2.2 │
-│                   │    • Regime context ⭐ │   • Sector data           │
+│                   │    • Technical Signals │   (17 tools)            │
+│                   │    • P&L Enrichment   │   • Signal perf ⭐       │
+│                   │    • Micro context    │   • Intraday tools ⭐     │
+│                   │    • Regime context ⭐ │   • Event calendar ⭐ v3  │
+│                   │    • Calibration ⭐ v3 │   • Kelly alloc ⭐ v3    │
 │                   │                        ↓                           │
 │                   │                   Signal Generation               │
+│                   │                        ↓                           │
+│                   │        V3.0 Pre-Send Validation Gate ⭐           │
+│                   │        • Event risk check (3C) → BUY→WATCH       │
+│                   │        • Correlation guard (3B) → warning         │
+│                   │        • Sector cap check (3B) → warning          │
+│                   │        • Kelly sizing (3B) → qty + value          │
 │                   │                        ↓                           │
 │                   │                 Risk Filters ⭐ v2.1               │
 │                   │                 • Drawdown Breaker                │
@@ -103,7 +156,7 @@ An intelligent stock trading system that combines real-time price tracking, AI-p
 │                        (9:30 AM IST)                                  │
 │                        • Liquidity Filter ⭐ v2.1                     │
 │                             ↓                                          │
-│                      Telegram Alerts                                  │
+│                      Telegram Alerts (with Kelly qty + warnings)      │
 │                             +                                          │
 │                      MongoDB Storage                                  │
 │                                                                        │
@@ -261,7 +314,7 @@ An intelligent stock trading system that combines real-time price tracking, AI-p
 - **On-demand screening** - Trigger via `/screen` Telegram command or REST API
 
 #### Enhanced AI Tools
-Claude now has access to **14 specialized tools**:
+Claude now has access to **17 specialized tools**:
 
 | Tool | Version | Description |
 |------|---------|-------------|
@@ -277,9 +330,40 @@ Claude now has access to **14 specialized tools**:
 | `get_peer_comparison` | v2.0 | Compare stock against sector peers for relative strength |
 | `screen_stocks` | v2.0 | Run technical screener to discover opportunities |
 | `get_signal_performance` | v2.1 | AI signal accuracy stats: win rate, avg P&L, confidence correlation (last 30-365 days) |
-| `get_intraday_indicators` | ⭐ v2.2 | Supertrend (5-min), VWAP bands, CPR levels for intraday context |
-| `get_opening_range` | ⭐ v2.2 | ORB high/low/range%, breakout direction and strength |
-| `get_gap_analysis` | ⭐ v2.2 | Overnight gap%: prev_close vs today_open, gap type, gap fill status |
+| `get_intraday_indicators` | v2.2 | Supertrend (5-min), VWAP bands, CPR levels for intraday context |
+| `get_opening_range` | v2.2 | ORB high/low/range%, breakout direction and strength |
+| `get_gap_analysis` | v2.2 | Overnight gap%: prev_close vs today_open, gap type, gap fill status |
+| `get_event_calendar` | ⭐ **v3.0** | Upcoming NSE corporate events (results, board meetings, dividends) — blocks BUY within 3 days |
+| `get_signal_calibration` | ⭐ **v3.0** | Historical win rate for a confidence level or reasoning tag pattern (Phase 3A calibration data) |
+| `get_capital_allocation` | ⭐ **v3.0** | Kelly-optimal quantity, correlation guard check, and sector concentration limit for any BUY candidate |
+
+### New in V3.0 - Intelligent Capital Architecture ⭐
+
+#### Event Risk Filter (Phase 3C)
+- **NSE corporate calendar** - Scrapes board meetings, results dates, dividend/bonus ex-dates, AGMs from NSE API daily at 8:50 AM
+- **3-day blocking window** - Any BUY signal within 3 days of a corporate event is downgraded to WATCH with the reason attached to the signal
+- **Intraday pre-filter** - Zero-cost gate before Claude is called: if same-day event exists, returns a synthetic SKIP without consuming API tokens
+- **In-memory cache** - Events cached per symbol dict, reloaded at startup and 8:50 AM daily. MongoDB `corporate_events` collection with 30-day TTL for persistence
+- **`/events` Telegram command** - Lists all upcoming events for held stocks: 🔴 within 1 day, 🟡 within 3 days, 🟢 within 7 days
+- **REST API** - `GET /api/v1/events`, `GET /api/v1/events/{symbol}`, `POST /api/v1/events/refresh`
+
+#### Signal Intelligence Layer (Phase 3A)
+- **Confidence calibration** - 90-day lookback on `signal_outcomes`, grouped into 5 buckets (0.5–0.6 to 0.9–1.0). Computes empirical win rate and calibration error per bucket
+- **Pattern performance** - Groups outcomes by `reasoning_tags` combinations to find the best/worst signal patterns (e.g., `RSI_oversold+MACD_crossover` → 74% win rate)
+- **Regime-conditioned performance** - Win rate computed per market regime — informs Claude to raise the bar in SIDEWAYS/BEAR regimes
+- **Dynamic system prompt** - At 8 PM nightly, Claude's system prompt is automatically rebuilt with its own historical accuracy stats. Cold start gracefully falls back to the base static prompt
+- **`/calibration` Telegram command** - Shows confidence bucket accuracy, top/bottom patterns, regime performance
+- **REST API** - `GET /api/v1/calibration`, `GET /api/v1/calibration/patterns`
+
+#### Capital Allocation Engine (Phase 3B)
+- **Half-Kelly sizing** - Full Kelly `f = (W × b − L) / b` halved for conservative sizing, clamped to `[KELLY_MIN_POSITION_PCT, KELLY_MAX_POSITION_PCT]` (default 1%–20%). Uses calibrated win rate from Phase 3A
+- **Signals enriched** - Every BUY/STRONG_BUY signal now includes `kelly_fraction`, `recommended_qty`, `recommended_value_rs`, `correlation_warning`, `sector_warning`, `event_risk` fields
+- **Pearson correlation guard** - Daily close returns (not raw prices) used to compute Pearson r between the candidate and all holdings. Blocks if any pair exceeds 0.80 threshold
+- **Sector concentration cap** - Computes current sector weights from latest `portfolio_snapshot`. Warns if adding the new position would push any sector above 30%
+- **Portfolio beta** - 252-day weighted beta vs. Nifty 50 computed at 4 PM daily. Telegram alert if beta > 1.5 or < 0.5
+- **`/allocation` Telegram command** - Full report: portfolio beta, sector weights %, high-correlation pairs table
+- **`/kelly SYMBOL BUY ENTRY SL TARGET`** - Ad-hoc Kelly sizing for any potential trade without running a full analysis
+- **REST API** - `GET /api/v1/allocation`, `POST /api/v1/allocation/kelly`
 
 #### Additional Enhancements
 - **Webhook support** for Telegram (lower latency vs polling on hosted environments)
@@ -312,52 +396,58 @@ Stock-AI/
 ├── .env                           # Environment configuration
 │
 ├── src/
-│   ├── config.py                  # Settings from .env (16 intraday vars added v2.2)
+│   ├── config.py                  # Settings from .env (14 V3 vars added in v3.0)
 │   │
 │   ├── models/
 │   │   ├── holdings.py            # Holding, EnrichedHolding, PortfolioSnapshot
 │   │   ├── market.py              # Quote, Candle, TechnicalIndicators, MicroSignal
-│   │   ├── analysis.py            # TradeSignal, AnalysisResult, AlertMessage
+│   │   ├── analysis.py            # TradeSignal (+5 Kelly/event fields v3.0), AnalysisResult, AlertMessage
 │   │   ├── outcome.py             # SignalOutcome, OutcomeStatistics (v2.1)
-│   │   └── intraday.py            # ⭐ v2.2: IntradaySetup, ORBData, Position, DailyReport
+│   │   ├── intraday.py            # v2.2: IntradaySetup, ORBData, Position, DailyReport
+│   │   └── calibration.py         # ⭐ v3.0: CorporateEvent, EventRisk, CalibrationData, KellyResult, AllocationReport
 │   │
 │   ├── services/
 │   │   ├── groww_service.py       # Groww SDK wrapper (TOTP auth)
 │   │   ├── market_data.py         # Live data + indicator computation
-│   │   ├── ai_engine.py           # Claude agentic loop (long-term, 10 iterations)
-│   │   ├── portfolio_monitor.py   # Orchestrator: fetch → analyze → alert
-│   │   ├── telegram_bot.py        # Bot commands + push notifications
-│   │   ├── database.py            # MongoDB async client
+│   │   ├── ai_engine.py           # Claude agentic loop (17 tools, dynamic system prompt v3.0)
+│   │   ├── portfolio_monitor.py   # Orchestrator: fetch → analyze → V3 validation gate → alert
+│   │   ├── telegram_bot.py        # Bot commands + push notifications (4 new V3 commands)
+│   │   ├── database.py            # MongoDB async client (6 new V3 collections)
 │   │   ├── micro_monitor.py       # 10-second polling engine (v2.0)
 │   │   ├── screener.py            # Stock screener engine (v2.0)
 │   │   ├── outcome_tracker.py     # Signal outcome tracking (v2.1)
 │   │   ├── drawdown_breaker.py    # Portfolio drawdown circuit breaker (v2.1)
 │   │   ├── regime_classifier.py   # Market regime classification (v2.1)
-│   │   ├── intraday_scanner.py    # ⭐ v2.2: Pre-market scan + EOD report
-│   │   ├── intraday_engine.py     # ⭐ v2.2: Claude AI tuned for intraday (5 iterations)
-│   │   └── intraday_monitor.py    # ⭐ v2.2: 1-minute orchestrator + position tracking
+│   │   ├── intraday_scanner.py    # v2.2: Pre-market scan + EOD report
+│   │   ├── intraday_engine.py     # v2.2: Claude AI tuned for intraday (event risk gate added v3.0)
+│   │   ├── intraday_monitor.py    # v2.2: 1-minute orchestrator + position tracking
+│   │   ├── event_risk_filter.py   # ⭐ v3.0: NSE calendar scraper + entry risk check
+│   │   ├── signal_calibrator.py   # ⭐ v3.0: Confidence calibration + pattern win rates + regime performance
+│   │   └── capital_allocator.py   # ⭐ v3.0: Kelly sizing + correlation guard + sector cap + portfolio beta
 │   │
 │   ├── tools/
-│   │   ├── definitions.py         # 14 Claude tool schemas (3 intraday added v2.2)
-│   │   └── executor.py            # Tool dispatch logic
+│   │   ├── definitions.py         # 17 Claude tool schemas (3 V3 tools added v3.0)
+│   │   └── executor.py            # Tool dispatch logic (3 new V3 cases)
 │   │
 │   ├── scheduler/
-│   │   ├── setup.py               # APScheduler config
-│   │   └── jobs.py                # Scheduled job functions
+│   │   ├── setup.py               # APScheduler config (3 new V3 jobs registered)
+│   │   └── jobs.py                # Scheduled job functions (refresh_events, nightly_calibration, portfolio_beta)
 │   │
 │   ├── api/
-│   │   ├── router.py              # REST API endpoints (5 intraday added v2.2)
+│   │   ├── router.py              # REST API endpoints (7 new V3 endpoints added)
 │   │   └── dependencies.py        # API key verification
 │   │
 │   └── utils/
 │       ├── market_hours.py        # IST market hours, NSE holidays
 │       ├── indicators.py          # RSI, MACD, SMA, EMA, Bollinger
-│       ├── intraday_indicators.py # ⭐ v2.2: Supertrend, ORB, CPR, VWAP bands
+│       ├── intraday_indicators.py # v2.2: Supertrend, ORB, CPR, VWAP bands
 │       ├── formatters.py          # Telegram HTML formatters
 │       ├── logger.py              # Structured logging
 │       ├── cache.py               # In-memory quote cache
 │       ├── circuit_breaker.py     # API failure protection
-│       └── exceptions.py          # Custom exception hierarchy
+│       ├── exceptions.py          # Custom exception hierarchy
+│       ├── kelly.py               # ⭐ v3.0: Kelly criterion math (compute_half_kelly, compute_position_size)
+│       └── correlation.py         # ⭐ v3.0: Pearson correlation (pearson_correlation, build_correlation_matrix)
 │
 └── tests/
     ├── conftest.py                # Shared pytest fixtures
@@ -415,6 +505,12 @@ TELEGRAM_WEBHOOK_URL=  # Optional: https://your-app.onrender.com (leave empty fo
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DATABASE=stock_ai
 
+# Market Hours (IST — change only if NSE timing ever shifts)
+MARKET_OPEN_HOUR=9
+MARKET_OPEN_MINUTE=15
+MARKET_CLOSE_HOUR=15
+MARKET_CLOSE_MINUTE=30
+
 # Monitoring Schedule
 MONITOR_INTERVAL_MINUTES=15
 
@@ -468,6 +564,26 @@ INTRADAY_SUPERTREND_MULTIPLIER=3.0
 INTRADAY_MIN_GAP_PCT=0.5                # Min gap% for pre-market watchlist
 INTRADAY_WATCHLIST_SIZE=20              # Max symbols in daily watchlist
 INTRADAY_MIN_BREAKOUT_CONFIRM_TICKS=3   # MicroMonitor ticks to confirm
+
+# Event Risk Filter (v3.0)
+EVENT_RISK_ENABLED=true
+EVENT_RISK_LOOKBACK_DAYS=3          # Block entries N days before event
+
+# Signal Calibration (v3.0)
+CALIBRATION_ENABLED=true
+CALIBRATION_LOOKBACK_DAYS=90        # Days of outcome history to analyze
+CALIBRATION_MIN_SAMPLES=5           # Min signals per bucket to trust stats
+CALIBRATION_REFRESH_HOUR=20         # Nightly recalculation hour (8 PM)
+
+# Capital Allocation / Kelly Criterion (v3.0)
+CAPITAL_ALLOCATION_ENABLED=true
+KELLY_FRACTION=0.5                  # Half-Kelly multiplier (0.5 = conservative)
+KELLY_MAX_POSITION_PCT=20.0         # Never exceed 20% in one stock
+KELLY_MIN_POSITION_PCT=1.0          # Minimum meaningful position
+CORRELATION_GUARD_ENABLED=true
+CORRELATION_THRESHOLD=0.80          # Block if Pearson correlation exceeds this
+SECTOR_CAP_ENABLED=true
+SECTOR_MAX_PCT=30.0                 # Max allocation in any single sector
 
 # Resilience (v2.0)
 CACHE_TTL_SECONDS=8
@@ -537,18 +653,20 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 On startup, you'll see:
 
 ```
-Starting Stock AI Portfolio Monitor v2.2
+Starting Stock AI Portfolio Monitor v3
 MongoDB connected
 Groww API authenticated
 Telegram bot started
+EventRiskFilter cache loaded: 15 symbols
 Scheduler started with market-hours jobs
 MicroMonitor started (10-second price polling)
-Intraday monitor started (1-minute intraday cycle)
+IntradayMonitor started (1-minute intraday cycle)
 All systems online.
 • 10-second live price tracking active
 • AI analysis every 15 minutes during market hours
+• Event risk filter active — BUY signals guarded before corporate events
 • Daily screener at 9:30 AM IST
-• Intraday monitor: pre-market scan 8:55 AM, ORB setup 9:31 AM, 1-min cycle 9:30–3:15 PM
+Use /help to see all commands.
 ```
 
 ## Telegram Commands
@@ -571,6 +689,10 @@ All systems online.
 | `/breaker_status` ⭐ **v2.1** | Portfolio drawdown breaker status |
 | `/reset_breaker` ⭐ **v2.1** | Manually reset drawdown circuit breaker (use with caution) |
 | `/regime_status` ⭐ **v2.1** | Current market regime classification |
+| `/events` ⭐ **v3.0** | Upcoming corporate events for all held stocks (results, dividends, board meetings) |
+| `/calibration` ⭐ **v3.0** | Claude signal accuracy stats: confidence bucket win rates, best/worst patterns, regime performance |
+| `/allocation` ⭐ **v3.0** | Full portfolio allocation report: beta vs Nifty, sector weights %, high-correlation pairs |
+| `/kelly SYMBOL BUY 2450 2400 2550` ⭐ **v3.0** | Ad-hoc Kelly-optimal position sizing for any potential trade |
 | `/settings` | View current alert thresholds |
 | `/help` | List all commands |
 
@@ -634,11 +756,33 @@ All endpoints are prefixed with `/api/v1`:
 | `GET` | `/intraday/risk` | Current risk exposure: positions open, Rs. at risk, breaker status |
 | `POST` | `/intraday/scan` | Trigger on-demand pre-market scan |
 
+### Event Risk Filter ⭐ **v3.0**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/events` | Upcoming corporate events for all current holdings |
+| `GET` | `/events/{symbol}` | Corporate events for a specific symbol |
+| `POST` | `/events/refresh` | Trigger on-demand NSE calendar refresh |
+
+### Signal Calibration ⭐ **v3.0**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/calibration` | Latest confidence calibration stats (win rate per bucket) |
+| `GET` | `/calibration/patterns` | Top reasoning-tag patterns ranked by win rate |
+
+### Capital Allocation ⭐ **v3.0**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/allocation` | Full portfolio allocation report: beta, sectors, correlation pairs |
+| `POST` | `/allocation/kelly` | Compute Kelly-optimal sizing for given trade params (symbol, action, confidence, entry, SL, target) |
+
 ### System
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/health` | Health check (includes MicroMonitor + intraday status) |
+| `GET` | `/health` | Health check (includes MicroMonitor, intraday, and event risk cache size) |
 | `GET` | `/settings` | Current user settings |
 | `PUT` | `/settings` | Update settings |
 | `GET` | `/ai/usage?days=7` | Claude API token usage summary |
@@ -653,9 +797,10 @@ The system uses **two separate AI engines**:
 
 ### Long-Term AI Engine (`ai_engine.py`)
 - **Purpose**: Portfolio analysis, BUY/SELL/HOLD signals for CNC holdings
-- **Tools**: 14 tools (including 3 new intraday tools for context)
+- **Tools**: 17 tools (14 previous + 3 new V3.0: `get_event_calendar`, `get_signal_calibration`, `get_capital_allocation`)
 - **Max iterations**: 10
 - **Max tokens**: 4096
+- **Dynamic system prompt** ⭐ v3.0: Rebuilt nightly with Claude's own historical win rates, confidence calibration, and regime performance
 
 ### Intraday AI Engine (`intraday_engine.py`) ⭐ v2.2
 - **Purpose**: Day trade confirmation — entry validation, position sizing, exit evaluation
@@ -673,13 +818,18 @@ User Request / Python trigger → Claude decides tools → Executor fetches data
 ### AI Output Format
 
 Claude returns:
-- **Action**: `BUY` / `SELL` / `HOLD` / `STRONG_BUY` / `STRONG_SELL`
+- **Action**: `BUY` / `SELL` / `HOLD` / `STRONG_BUY` / `STRONG_SELL` / `WATCH`
 - **Confidence**: 0.0 to 1.0
 - **Target price** and **stop-loss**
 - **Reasoning** backed by technical data
 - **Risk level**: `LOW` / `MEDIUM` / `HIGH`
 - **Market sentiment**: `BULLISH` / `BEARISH` / `NEUTRAL`
 - **Timeframe**: `intraday` / short-term / medium-term / long-term
+- **Kelly fraction** ⭐ v3.0: Optimal portfolio allocation % (e.g., 0.08 = 8%)
+- **Recommended quantity** ⭐ v3.0: Shares to buy based on Kelly sizing
+- **Correlation warning** ⭐ v3.0: Alert if new position is highly correlated with existing holdings
+- **Sector warning** ⭐ v3.0: Alert if sector concentration would exceed 30%
+- **Event risk** ⭐ v3.0: Reason if BUY was downgraded to WATCH due to upcoming corporate event
 
 ## Scheduled Jobs
 
@@ -688,21 +838,24 @@ All jobs respect NSE holidays and weekends:
 | Job | Schedule | Description |
 |-----|----------|-------------|
 | **MicroMonitor Loop** (v2.0) | Every 10s, Mon-Fri 9:15-15:30 IST | Price polling + momentum tracking + stop-loss breach detection |
+| **NSE Event Calendar Refresh** ⭐ **v3.0** | 8:50 AM IST | Scrape NSE corporate actions API and refresh event cache |
 | **Regime Classification** (v2.1) | 9:20 AM IST | Classify Nifty 50 market regime (BULL/BEAR/SIDEWAYS) |
-| **Intraday Pre-Market Scan** ⭐ **v2.2** | 8:55 AM IST | Gap scan + CPR computation + watchlist build |
-| **Intraday ORB Setup** ⭐ **v2.2** | 9:31 AM IST | Compute opening range (9:15–9:29 candles) for all watchlist symbols |
-| **Portfolio Monitor** | Every 15 min, Mon-Fri 9:15-15:30 IST | Full AI analysis cycle + drawdown checks |
+| **Intraday Pre-Market Scan** (v2.2) | 8:55 AM IST | Gap scan + CPR computation + watchlist build |
+| **Intraday ORB Setup** (v2.2) | 9:31 AM IST | Compute opening range (9:15–9:29 candles) for all watchlist symbols |
+| **Portfolio Monitor** | Every 15 min, Mon-Fri 9:15-15:30 IST | Full AI analysis cycle + V3 pre-send validation gate |
 | **Daily Screener** (v2.0) | 9:30 AM IST | Technical stock screening + AI ranking + liquidity filter |
 | **Market Open** | 9:15 AM IST | Re-authenticate Groww + opening notification |
 | **Reload Stop-Losses** (v2.1) | Hourly during market hours | Refresh active stop-losses into MicroMonitor memory |
-| **Intraday Hard Exit** ⭐ **v2.2** | 3:15 PM IST | CRITICAL Telegram alert for all open MIS positions |
+| **Intraday Hard Exit** (v2.2) | 3:15 PM IST | CRITICAL Telegram alert for all open MIS positions |
 | **Market Close** | 3:35 PM IST | End-of-day long-term summary |
-| **Intraday Daily Report** ⭐ **v2.2** | 3:35 PM IST | EOD intraday P&L: wins/losses, total P&L, best/worst trades |
+| **Intraday Daily Report** (v2.2) | 3:35 PM IST | EOD intraday P&L: wins/losses, total P&L, best/worst trades |
 | **Daily AI Analysis** | 3:40 PM IST | Comprehensive long-term portfolio analysis |
+| **Portfolio Beta Job** ⭐ **v3.0** | 4:00 PM IST | Compute portfolio-weighted beta vs. Nifty 50 + correlation matrix |
 | **Health Check** | Every 30 min during market hours | Verify Groww + MongoDB connectivity |
 | **Outcome Tracking** (v2.1) | Every 6 hours | Auto-detect signal position exits and compute P&L |
+| **Nightly Calibration** ⭐ **v3.0** | 8:00 PM IST | Compute confidence calibration, pattern performance, regime stats. Rebuild Claude's system prompt |
 
-> **Note:** Intraday jobs 10–13 are only registered when `INTRADAY_ENABLED=true`.
+> **Note:** Intraday jobs are only registered when `INTRADAY_ENABLED=true`. V3 event risk and calibration jobs require their respective feature flags.
 
 ## MongoDB Collections
 
@@ -719,12 +872,18 @@ All jobs respect NSE holidays and weekends:
 | `portfolio_peaks` (v2.1) | Portfolio all-time high values for drawdown calculation | 90 days |
 | `circuit_breaker_state` (v2.1) | Drawdown breaker triggered state | None |
 | `market_regime` (v2.1) | Daily Nifty 50 regime classification | 365 days |
-| `intraday_watchlist` ⭐ **v2.2** | Daily pre-market scan results (gap%, CPR, rank) | 1 day |
-| `intraday_positions` ⭐ **v2.2** | All MIS trades: open + closed, P&L, entry trigger | 90 days |
-| `intraday_signals` ⭐ **v2.2** | AI entry/exit signals for intraday | 30 days |
-| `intraday_orb_data` ⭐ **v2.2** | Opening range per symbol per day | 7 days |
-| `intraday_daily_pnl` ⭐ **v2.2** | EOD P&L ledger per day | 365 days |
-| `intraday_breaker_state` ⭐ **v2.2** | Daily loss breaker triggered state | None |
+| `intraday_watchlist` (v2.2) | Daily pre-market scan results (gap%, CPR, rank) | 1 day |
+| `intraday_positions` (v2.2) | All MIS trades: open + closed, P&L, entry trigger | 90 days |
+| `intraday_signals` (v2.2) | AI entry/exit signals for intraday | 30 days |
+| `intraday_orb_data` (v2.2) | Opening range per symbol per day | 7 days |
+| `intraday_daily_pnl` (v2.2) | EOD P&L ledger per day | 365 days |
+| `intraday_breaker_state` (v2.2) | Daily loss breaker triggered state | None |
+| `corporate_events` ⭐ **v3.0** | NSE corporate actions: results, dividends, board meetings, ex-dates | 30 days |
+| `confidence_calibration` ⭐ **v3.0** | Win rate per confidence bucket (0.5–1.0), computed nightly | None |
+| `pattern_performance` ⭐ **v3.0** | Win rate per reasoning-tag pattern combination | None |
+| `regime_signal_performance` ⭐ **v3.0** | Win rate per market regime (BULL/SIDEWAYS/BEAR) | None |
+| `portfolio_correlation` ⭐ **v3.0** | Pairwise Pearson correlation matrix for all holdings (30-day) | None |
+| `portfolio_beta` ⭐ **v3.0** | Portfolio-weighted beta vs. Nifty 50 (252-day) | None |
 
 ## Configuration Reference
 
@@ -740,6 +899,7 @@ All settings are in `.env`:
 | `TELEGRAM_BOT_TOKEN` | required | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | required | Your Telegram chat ID |
 | `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DATABASE` | `stock_ai` | MongoDB database name |
 
 ### Monitoring
 
@@ -748,6 +908,15 @@ All settings are in `.env`:
 | `MONITOR_INTERVAL_MINUTES` | `15` | AI analysis cycle interval |
 | `PNL_ALERT_THRESHOLD_PCT` | `5.0` | Alert when stock moves > X% |
 | `PORTFOLIO_ALERT_THRESHOLD_PCT` | `3.0` | Alert when portfolio moves > X% |
+
+### Market Hours
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MARKET_OPEN_HOUR` | `9` | NSE market open hour (IST, 24h) |
+| `MARKET_OPEN_MINUTE` | `15` | NSE market open minute — 9:15 AM IST |
+| `MARKET_CLOSE_HOUR` | `15` | NSE market close hour (IST, 24h) |
+| `MARKET_CLOSE_MINUTE` | `30` | NSE market close minute — 3:30 PM IST |
 
 ### MicroMonitor (v2)
 
@@ -817,6 +986,35 @@ All settings are in `.env`:
 | `INTRADAY_WATCHLIST_SIZE` | `20` | Max symbols in daily intraday watchlist |
 | `INTRADAY_MIN_BREAKOUT_CONFIRM_TICKS` | `3` | MicroMonitor consecutive ticks to confirm breakout |
 
+### Event Risk Filter ⭐ **v3.0**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EVENT_RISK_ENABLED` | `true` | Enable NSE corporate event risk filter |
+| `EVENT_RISK_LOOKBACK_DAYS` | `3` | Block BUY signals N days before a corporate event |
+
+### Signal Calibration ⭐ **v3.0**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CALIBRATION_ENABLED` | `true` | Enable nightly signal calibration computation |
+| `CALIBRATION_LOOKBACK_DAYS` | `90` | Days of `signal_outcomes` history to analyze |
+| `CALIBRATION_MIN_SAMPLES` | `5` | Minimum signals per confidence bucket to trust stats |
+| `CALIBRATION_REFRESH_HOUR` | `20` | Hour (24h) to run nightly calibration (default 8 PM) |
+
+### Capital Allocation / Kelly Criterion ⭐ **v3.0**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CAPITAL_ALLOCATION_ENABLED` | `true` | Enable Kelly sizing, correlation guard, sector cap |
+| `KELLY_FRACTION` | `0.5` | Kelly multiplier (0.5 = half-Kelly, the standard conservative choice) |
+| `KELLY_MAX_POSITION_PCT` | `20.0` | Hard cap: never allocate more than 20% of portfolio to one stock |
+| `KELLY_MIN_POSITION_PCT` | `1.0` | Floor: minimum meaningful position size |
+| `CORRELATION_GUARD_ENABLED` | `true` | Enable Pearson correlation guard for portfolio holdings |
+| `CORRELATION_THRESHOLD` | `0.80` | Pearson r threshold above which a position is flagged/blocked |
+| `SECTOR_CAP_ENABLED` | `true` | Enable sector concentration limit |
+| `SECTOR_MAX_PCT` | `30.0` | Max % of portfolio value allowed in any single sector |
+
 ### Resilience (v2.0)
 
 | Variable | Default | Description |
@@ -835,8 +1033,9 @@ All settings are in `.env`:
 | `CLAUDE_MAX_TOKENS` | `4096` | Max response tokens (long-term engine) |
 | `TELEGRAM_WEBHOOK_URL` | `` | HTTPS webhook URL (empty = polling) |
 | `API_KEY` | `` | X-API-Key auth (empty = disabled) |
-| `LOG_LEVEL` | `INFO` | Logging level |
-| `LOG_JSON` | `false` | JSON log format |
+| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `LOG_JSON` | `false` | JSON structured log format (useful for log aggregators) |
+| `LOG_FILE` | `stock_ai.log` | Log output file path |
 
 ## Running Tests
 
@@ -977,20 +1176,20 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 - [x] **v2.0**: MicroMonitor (10s polling), Stock Screener, Enhanced AI tools (11 total)
 - [x] **v2.1**: Signal outcome tracking, stop-loss monitoring, drawdown breaker, regime classification, liquidity filter
 - [x] **v2.2**: Full intraday trading module — pre-market scan, ORB, VWAP, Supertrend, CPR, 1-min monitor, risk management, EOD P&L report
+- [x] **v3.0**: Intelligent Capital Architecture — Event Risk Filter (NSE calendar), Signal Calibration (confidence buckets + pattern win rates), Capital Allocation (half-Kelly sizing + Pearson correlation guard + sector cap + portfolio beta). 17 AI tools, dynamic system prompt, 6 new MongoDB collections
 
 ### In Progress / Next
-- [ ] **v2.3**: AI cost tracking and usage analytics dashboard
-- [ ] **v2.4**: News sentiment engine + FII/DII flow tracker
-- [ ] **v3.0**: Full backtesting engine with historical signal replay
-- [ ] **v3.1**: Dynamic position sizing based on regime + account risk %
-- [ ] **v3.2**: Options chain analysis and F&O strategy recommendations
+- [ ] **v3.1**: News sentiment engine + FII/DII flow tracker (inject into Claude pre-analysis)
+- [ ] **v3.2**: Full backtesting engine with historical signal replay against `signal_outcomes`
+- [ ] **v3.3**: Options chain analysis and F&O strategy recommendations
+- [ ] **v3.4**: AI cost tracking and usage analytics dashboard
 
 ### Future Phases
 - [ ] Multi-user support with per-user portfolios
 - [ ] Web dashboard with real-time charts
 - [ ] WhatsApp integration as alternative to Telegram
-- [ ] Portfolio correlation matrix for diversification analysis
 - [ ] Secondary price feed fallback (BSE/Yahoo Finance)
+- [ ] Auto-execution: place orders via Groww Trading API when confidence > threshold
 
 ## Disclaimer
 
@@ -1002,15 +1201,17 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ---
 
-**Version:** 2.2.0
+**Version:** 3.0.0
 **Last Updated:** March 2026
 **Author:** Built with Claude Code
 
-**Architecture Grade:** A (upgraded from A- in v2.1)
-- Intelligence & Data Gathering: A-
-- **Risk Management: A (intraday risk engine added)**
-- **Signal Validation: B+**
+**Architecture Grade:** A+ (upgraded from A in v2.2)
+- Intelligence & Data Gathering: A
+- Risk Management: A
+- **Signal Validation: A (calibration feedback loop added in v3.0)**
 - Integration & Monitoring: A
-- **Intraday Trading: A- (new in v2.2)**
+- Intraday Trading: A-
+- **Capital Allocation: A (Kelly sizing + correlation + sector guards — new in v3.0)**
+- **Self-Learning Loop: A- (dynamic system prompt with historical accuracy — new in v3.0)**
 
 For questions, issues, or feature requests, please open an issue on GitHub.

@@ -377,6 +377,82 @@ async def execute_tool(tool_name: str, tool_input: dict[str, Any]) -> dict | str
             except Exception as e:
                 return {"error": f"Gap analysis unavailable for {symbol}: {e}"}
 
+        # ── V3.0 Tools ──────────────────────────────────────────────────────────
+
+        case "get_event_calendar":
+            symbol = tool_input["trading_symbol"]
+            days_ahead = min(tool_input.get("days_ahead", 14), 30)
+            try:
+                from src.services.event_risk_filter import event_risk_filter
+                events = await event_risk_filter.get_events_for_holdings([symbol], days_ahead=days_ahead)
+                sym_events = events.get(symbol, [])
+                risk = await event_risk_filter.check_entry_risk(symbol, days_ahead=days_ahead)
+                return {
+                    "symbol": symbol,
+                    "days_ahead": days_ahead,
+                    "entry_blocked": risk.blocked,
+                    "block_reason": risk.reason,
+                    "events": [
+                        {
+                            "event_type": e.event_type,
+                            "event_date": e.event_date.isoformat(),
+                            "description": e.description,
+                            "days_until": (e.event_date - __import__("datetime").date.today()).days,
+                        }
+                        for e in sym_events
+                    ],
+                    "event_count": len(sym_events),
+                }
+            except Exception as e:
+                return {"error": f"Event calendar unavailable for {symbol}: {e}"}
+
+        case "get_signal_calibration":
+            try:
+                from src.services.signal_calibrator import signal_calibrator
+                confidence = tool_input.get("confidence_level")
+                tags = tool_input.get("reasoning_tags", [])
+                return await signal_calibrator.get_calibration_for_tool(
+                    confidence_level=confidence,
+                    reasoning_tags=tags,
+                )
+            except Exception as e:
+                return {"error": f"Signal calibration unavailable: {e}"}
+
+        case "get_capital_allocation":
+            symbol = tool_input["trading_symbol"]
+            try:
+                from src.services.capital_allocator import capital_allocator
+                kelly = await capital_allocator.get_kelly_recommendation(
+                    symbol=symbol,
+                    action=tool_input["action"],
+                    confidence=tool_input["confidence"],
+                    entry_price=tool_input["entry_price"],
+                    stop_loss=tool_input["stop_loss"],
+                    target_price=tool_input["target_price"],
+                )
+                corr = await capital_allocator.check_correlation_guard(symbol)
+                sector_check = await capital_allocator.check_sector_limits(symbol)
+                return {
+                    "symbol": symbol,
+                    "kelly_fraction": round(kelly.kelly_fraction, 4),
+                    "recommended_qty": kelly.recommended_qty,
+                    "recommended_value_rs": round(kelly.recommended_value_rs, 2),
+                    "max_risk_rs": round(kelly.max_risk_rs, 2),
+                    "win_rate_used": round(kelly.win_rate_used, 3),
+                    "kelly_note": kelly.note,
+                    "correlation_blocked": corr.blocked,
+                    "correlated_with": corr.correlated_with,
+                    "correlation_value": round(corr.correlation, 3) if corr.correlation else None,
+                    "correlation_message": corr.message,
+                    "sector_blocked": sector_check.blocked,
+                    "sector": sector_check.sector,
+                    "sector_current_pct": round(sector_check.current_sector_pct, 1),
+                    "sector_after_pct": round(sector_check.after_sector_pct, 1),
+                    "sector_message": sector_check.message,
+                }
+            except Exception as e:
+                return {"error": f"Capital allocation unavailable for {symbol}: {e}"}
+
         case _:
             logger.warning(f"Unknown tool called: {tool_name}")
             return f"Unknown tool: {tool_name}"
