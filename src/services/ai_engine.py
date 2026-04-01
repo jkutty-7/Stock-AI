@@ -226,6 +226,9 @@ class AIAnalysisEngine:
 
             if response.stop_reason != "tool_use":
                 result = self._parse_final_response(response, analysis_type)
+                # V3 Phase 3C: enrich BUY signals with event risk (block near corporate events)
+                if settings.event_risk_enabled and result.signals:
+                    result = await self._apply_event_risk(result)
                 # Log usage to DB (fire-and-forget)
                 await self._log_usage(
                     analysis_type=analysis_type.value,
@@ -295,6 +298,27 @@ class AIAnalysisEngine:
             )
         except anthropic.APIError as e:
             raise AIAnalysisError(f"Claude API error: {e}") from e
+
+    async def _apply_event_risk(self, result: AnalysisResult) -> AnalysisResult:
+        """Phase 3C: check event risk for BUY/STRONG_BUY signals; downgrade if blocked.
+
+        Non-fatal — if the event filter is unavailable, signals pass through unchanged.
+        """
+        try:
+            from src.services.event_risk_filter import event_risk_filter
+            for signal in result.signals:
+                if signal.action not in (ActionType.BUY, ActionType.STRONG_BUY):
+                    continue
+                risk = await event_risk_filter.check_entry_risk(signal.trading_symbol)
+                if risk.blocked:
+                    logger.info(
+                        f"[3C] {signal.trading_symbol} BUY→HOLD — event risk: {risk.reason}"
+                    )
+                    signal.event_risk = risk.reason
+                    signal.action = ActionType.HOLD
+        except Exception as e:
+            logger.debug(f"Event risk enrichment skipped (non-fatal): {e}")
+        return result
 
     async def _log_usage(
         self,
