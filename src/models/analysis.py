@@ -44,6 +44,13 @@ class TradeSignal(BaseModel):
     time_horizon: Optional[str] = None  # intraday | swing_3-5d | positional_2-4w
     micro_signal_context: Optional[str] = None
     expires_at: Optional[datetime] = None
+    # V3 additions — capital allocation & event risk enrichment
+    kelly_fraction: Optional[float] = None          # e.g., 0.08 = 8% of portfolio
+    recommended_qty: Optional[int] = None           # Kelly-sized share quantity
+    recommended_value_rs: Optional[float] = None    # Kelly-sized Rs. value
+    correlation_warning: Optional[str] = None       # e.g., "HIGH CORRELATION with TCS (0.91)"
+    sector_warning: Optional[str] = None            # e.g., "IT sector at 28%, adding = 34%"
+    event_risk: Optional[str] = None               # e.g., "Results in 2 days — consider waiting"
 
 
 class AnalysisResult(BaseModel):

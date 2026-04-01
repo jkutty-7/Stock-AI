@@ -43,7 +43,10 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         market_close_job,
         market_open_job,
         monitoring_job,
+        nightly_calibration_job,
         outcome_tracking_job,
+        portfolio_beta_job,
+        refresh_events_job,
         reload_stop_losses_job,
     )
 
@@ -214,6 +217,47 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
             ),
             id="intraday_daily_report",
             name="Intraday Daily P&L Report",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    # ── V3.0 Jobs ─────────────────────────────────────────────────────────────
+
+    # 14. Refresh NSE corporate events at 8:50 AM (before pre-market scan)
+    if settings.event_risk_enabled:
+        scheduler.add_job(
+            refresh_events_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri", hour=8, minute=50, timezone=IST
+            ),
+            id="refresh_events",
+            name="NSE Corporate Event Calendar Refresh",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    # 15. Nightly calibration at configured hour (default 8 PM)
+    if settings.calibration_enabled:
+        scheduler.add_job(
+            nightly_calibration_job,
+            trigger=CronTrigger(
+                hour=settings.calibration_refresh_hour, minute=0, timezone=IST
+            ),
+            id="nightly_calibration",
+            name="Nightly Signal Calibration",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    # 16. Portfolio beta + correlation computation at 4 PM (after close)
+    if settings.capital_allocation_enabled:
+        scheduler.add_job(
+            portfolio_beta_job,
+            trigger=CronTrigger(
+                day_of_week="mon-fri", hour=16, minute=0, timezone=IST
+            ),
+            id="portfolio_beta",
+            name="Portfolio Beta & Correlation",
             replace_existing=True,
             max_instances=1,
         )

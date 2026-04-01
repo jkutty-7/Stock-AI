@@ -260,3 +260,160 @@ async def trigger_intraday_scan(
         return {"status": "ok", "candidates_found": len(setups)}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ----------------------------------------------------------------
+# V3.0 Endpoints — Event Risk (Phase 3C)
+# ----------------------------------------------------------------
+
+@router.get("/events")
+async def get_events_for_holdings(_: None = Depends(verify_api_key)):
+    """Get upcoming corporate events for all current holdings."""
+    try:
+        from src.services.event_risk_filter import event_risk_filter
+        from src.services.groww_service import groww_service
+        holdings = await groww_service.get_holdings()
+        symbols = [h.trading_symbol for h in holdings]
+        events = await event_risk_filter.get_events_for_holdings(symbols, days_ahead=14)
+        return {
+            "symbols_checked": len(symbols),
+            "symbols_with_events": len(events),
+            "events": {
+                sym: [
+                    {
+                        "event_type": e.event_type,
+                        "event_date": e.event_date.isoformat(),
+                        "description": e.description,
+                        "days_until": (__import__("datetime").date.today() - e.event_date).days * -1,
+                    }
+                    for e in evts
+                ]
+                for sym, evts in events.items()
+            },
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/events/{symbol}")
+async def get_events_for_symbol(
+    symbol: str,
+    days_ahead: int = 30,
+    _: None = Depends(verify_api_key),
+):
+    """Get upcoming corporate events for a specific symbol."""
+    try:
+        from src.services.event_risk_filter import event_risk_filter
+        sym = symbol.upper()
+        events = await event_risk_filter.get_events_for_holdings([sym], days_ahead=days_ahead)
+        risk = await event_risk_filter.check_entry_risk(sym, days_ahead=days_ahead)
+        return {
+            "symbol": sym,
+            "days_ahead": days_ahead,
+            "entry_blocked": risk.blocked,
+            "block_reason": risk.reason,
+            "events": [
+                {
+                    "event_type": e.event_type,
+                    "event_date": e.event_date.isoformat(),
+                    "description": e.description,
+                }
+                for e in events.get(sym, [])
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/events/refresh")
+async def refresh_event_calendar(_: None = Depends(verify_api_key)):
+    """Trigger an on-demand refresh of the NSE corporate event calendar."""
+    try:
+        from src.services.event_risk_filter import event_risk_filter
+        saved = await event_risk_filter.refresh_calendar()
+        return {
+            "status": "ok",
+            "events_saved": saved,
+            "cache_size": event_risk_filter.cache_size,
+            "last_refresh": event_risk_filter.last_refresh.isoformat() if event_risk_filter.last_refresh else None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ----------------------------------------------------------------
+# V3.0 Endpoints — Signal Calibration (Phase 3A)
+# ----------------------------------------------------------------
+
+@router.get("/calibration")
+async def get_calibration(_: None = Depends(verify_api_key)):
+    """Get the latest confidence calibration statistics."""
+    try:
+        from src.services.signal_calibrator import signal_calibrator
+        cal = await signal_calibrator.get_current_calibration()
+        if not cal:
+            return {"error": "No calibration data yet. Run nightly_calibration_job first."}
+        return cal.model_dump(mode="json")
+    except ImportError:
+        return {"error": "Signal calibrator not yet available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/calibration/patterns")
+async def get_calibration_patterns(
+    limit: int = 20,
+    _: None = Depends(verify_api_key),
+):
+    """Get top-performing reasoning tag patterns by win rate."""
+    try:
+        from src.services.signal_calibrator import signal_calibrator
+        patterns = await signal_calibrator.get_top_patterns(limit=limit)
+        return {"patterns": [p.model_dump(mode="json") for p in patterns]}
+    except ImportError:
+        return {"error": "Signal calibrator not yet available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ----------------------------------------------------------------
+# V3.0 Endpoints — Capital Allocation (Phase 3B)
+# ----------------------------------------------------------------
+
+@router.get("/allocation")
+async def get_allocation_report(_: None = Depends(verify_api_key)):
+    """Get full portfolio allocation report: beta, sectors, correlation pairs."""
+    try:
+        from src.services.capital_allocator import capital_allocator
+        report = await capital_allocator.get_full_allocation_report()
+        return report.model_dump(mode="json")
+    except ImportError:
+        return {"error": "Capital allocator not yet available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/allocation/kelly")
+async def compute_kelly(
+    body: dict,
+    _: None = Depends(verify_api_key),
+):
+    """Compute Kelly-optimal position size for a given trade.
+
+    Body: { trading_symbol, action, confidence, entry_price, stop_loss, target_price }
+    """
+    try:
+        from src.services.capital_allocator import capital_allocator
+        result = await capital_allocator.get_kelly_recommendation(
+            symbol=body["trading_symbol"],
+            action=body["action"],
+            confidence=float(body["confidence"]),
+            entry_price=float(body["entry_price"]),
+            stop_loss=float(body["stop_loss"]),
+            target_price=float(body["target_price"]),
+        )
+        return result.model_dump(mode="json")
+    except ImportError:
+        return {"error": "Capital allocator not yet available"}
+    except Exception as e:
+        return {"error": str(e)}

@@ -179,6 +179,33 @@ class IntradayAIEngine:
         Returns:
             AnalysisResult with a signal (BUY/SKIP) for the symbol.
         """
+        # V3.0: Event risk gate — zero API cost pre-filter before Claude call
+        if settings.event_risk_enabled:
+            try:
+                from src.services.event_risk_filter import event_risk_filter
+                evt_risk = await event_risk_filter.check_entry_risk(symbol, days_ahead=1)
+                if evt_risk.blocked:
+                    logger.warning(
+                        f"IntradayEngine: Entry BLOCKED for {symbol} — {evt_risk.reason}"
+                    )
+                    # Return a synthetic SKIP result (no Claude API call wasted)
+                    skip_signal = TradeSignal(
+                        trading_symbol=symbol,
+                        action=ActionType.WATCH,
+                        confidence=0.0,
+                        reasoning=f" INTRADAY ENTRY BLOCKED — Event Risk: {evt_risk.reason}",
+                        risk_level="HIGH",
+                        event_risk=evt_risk.reason,
+                    )
+                    return AnalysisResult(
+                        analysis_type=AnalysisType.ALERT_CHECK,
+                        timestamp=datetime.now(),
+                        summary=f"Entry blocked for {symbol}: {evt_risk.reason}",
+                        signals=[skip_signal],
+                    )
+            except Exception as _ev_err:
+                logger.debug(f"Event risk pre-filter skipped for {symbol}: {_ev_err}")
+
         now_str = context.get("time_ist", datetime.now().strftime("%H:%M IST"))
         regime_str = ""
         if regime:
