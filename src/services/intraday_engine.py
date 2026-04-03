@@ -375,6 +375,9 @@ class IntradayAIEngine:
 
             if response.stop_reason != "tool_use":
                 result = self._parse_response(response, analysis_type)
+                # V3 Phase 3B: Kelly sizing + correlation + sector checks
+                if settings.capital_allocation_enabled and result.signals:
+                    result = await self._apply_capital_allocation(result)
                 elapsed = time.monotonic() - start_time
                 logger.info(f"Intraday AI done in {elapsed:.1f}s, {iteration} iterations")
                 return result
@@ -435,6 +438,68 @@ class IntradayAIEngine:
             )
         except anthropic.APIError as e:
             raise AIAnalysisError(f"Claude API error: {e}") from e
+
+    async def _apply_capital_allocation(self, result: AnalysisResult) -> AnalysisResult:
+        """Phase 3B: Kelly sizing, correlation guard, and sector check for BUY signals.
+
+        Non-fatal — signals pass through unchanged if the allocator is unavailable.
+        """
+        try:
+            from src.services.capital_allocator import capital_allocator
+            from src.services.groww_service import groww_service
+
+            buy_signals = [
+                s for s in result.signals
+                if s.action in (ActionType.BUY, ActionType.STRONG_BUY)
+            ]
+            if not buy_signals:
+                return result
+
+            symbols = [s.trading_symbol for s in buy_signals]
+            ltp_map = await groww_service.get_bulk_ltp(symbols)
+
+            for signal in buy_signals:
+                entry_price = ltp_map.get(f"NSE_{signal.trading_symbol}", 0.0)
+
+                if entry_price > 0 and signal.stop_loss and signal.target_price:
+                    try:
+                        kelly = await capital_allocator.get_kelly_recommendation(
+                            symbol=signal.trading_symbol,
+                            action=signal.action.value,
+                            confidence=signal.confidence,
+                            entry_price=entry_price,
+                            stop_loss=signal.stop_loss,
+                            target_price=signal.target_price,
+                        )
+                        signal.kelly_fraction = kelly.kelly_fraction
+                        signal.recommended_qty = kelly.recommended_qty
+                        signal.recommended_value_rs = kelly.recommended_value_rs
+                    except Exception as e:
+                        logger.debug(f"Kelly sizing skipped for {signal.trading_symbol}: {e}")
+
+                corr = await capital_allocator.check_correlation_guard(signal.trading_symbol)
+                if corr.blocked:
+                    logger.info(
+                        f"[3B] {signal.trading_symbol} BUY→HOLD — correlation: {corr.message}"
+                    )
+                    signal.correlation_warning = corr.message
+                    signal.action = ActionType.HOLD
+                    continue
+
+                sector = await capital_allocator.check_sector_limits(
+                    signal.trading_symbol,
+                    position_value=signal.recommended_value_rs,
+                )
+                if sector.blocked:
+                    logger.info(
+                        f"[3B] {signal.trading_symbol} BUY→HOLD — sector: {sector.message}"
+                    )
+                    signal.sector_warning = sector.message
+                    signal.action = ActionType.HOLD
+
+        except Exception as e:
+            logger.debug(f"Intraday capital allocation skipped (non-fatal): {e}")
+        return result
 
     def _parse_response(
         self, response: Any, analysis_type: AnalysisType
